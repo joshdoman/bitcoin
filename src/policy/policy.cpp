@@ -241,6 +241,7 @@ bool IsWitnessStandard(const CTransaction& tx, const CCoinsViewCache& mapInputs)
 
     // Track the number of inputs that commit to an annex.
     unsigned int annex_input_count = 0;
+    unsigned int available_annex_count = 0;
 
     for (unsigned int i = 0; i < tx.vin.size(); i++)
     {
@@ -314,6 +315,8 @@ bool IsWitnessStandard(const CTransaction& tx, const CCoinsViewCache& mapInputs)
             }
             if (stack.size() >= 2) {
                 // Script path spend (2 or more stack elements after removing optional annex)
+                available_annex_count++;
+
                 const auto& control_block = SpanPopBack(stack);
                 SpanPopBack(stack); // Ignore script
                 if (control_block.empty()) return false; // Empty control block is invalid
@@ -334,7 +337,7 @@ bool IsWitnessStandard(const CTransaction& tx, const CCoinsViewCache& mapInputs)
     }
 
     // If any inputs commit to an annex, all inputs must commit to an annex.
-    if (annex_input_count > 0 && annex_input_count != tx.vin.size()) {
+    if (annex_input_count > 0 && annex_input_count != available_annex_count) {
         return false;
     }
 

@@ -1505,6 +1505,7 @@ class TaprootTest(BitcoinTestFramework):
                 expected_fail_msg = None if fail_input is None else input_utxos[fail_input].spender.err_msg
                 # Fill inputs/witnesses
                 annex_count = 0
+                available_annex_count = 0
                 for i in range(len(input_utxos)):
                     sat_fn_output = input_data[i][i != fail_input]
 
@@ -1513,6 +1514,7 @@ class TaprootTest(BitcoinTestFramework):
 
                     # Count annex inputs.
                     annex = sat_fn_output[2]
+                    available_annex_count += 1
                     if annex is not None:
                         annex_count += 1
 
@@ -1522,7 +1524,7 @@ class TaprootTest(BitcoinTestFramework):
                     and (all(utxo.spender.is_standard for utxo in input_utxos))  # All inputs must be standard
                     and tx.version >= 1  # The tx version must be standard
                     and tx.version <= 2
-                    and (annex_count == 0 or annex_count == len(input_utxos)) # Opt-in annexes
+                    and (annex_count == 0 or annex_count == available_annex_count) # Opt-in annexes
                 )
                 tx.rehash()
                 msg = ','.join(utxo.spender.comment + ("*" if n == fail_input else "") for n, utxo in enumerate(input_utxos))
