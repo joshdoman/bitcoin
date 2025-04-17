@@ -422,7 +422,7 @@ bool EvalScript(std::vector<std::vector<unsigned char> >& stack, const CScript& 
     opcodetype opcode;
     valtype vchPushValue;
     ConditionStack vfExec;
-    std::vector<valtype> altstack;
+    std::vector<valtype> altstack = execdata.m_altstack;
     set_error(serror, SCRIPT_ERR_UNKNOWN_ERROR);
     if ((sigversion == SigVersion::BASE || sigversion == SigVersion::WITNESS_V0) && script.size() > MAX_SCRIPT_SIZE) {
         return set_error(serror, SCRIPT_ERR_SCRIPT_SIZE);
@@ -1213,6 +1213,22 @@ bool EvalScript(std::vector<std::vector<unsigned char> >& stack, const CScript& 
                 }
                 break;
 
+                case OP_DELEGATE: {
+                    // OP_DELEGATE is only available in Tapscript
+                    if (sigversion == SigVersion::BASE || sigversion == SigVersion::WITNESS_V0) return set_error(serror, SCRIPT_ERR_BAD_OPCODE);
+
+                    if (execdata.m_annex.size() > 1 && execdata.m_annex[0] == 0x01) {
+                        if (execdata.m_annex_script_applied) return set_error(serror, SCRIPT_ERR_BAD_OPCODE);
+                        execdata.m_annex_script_applied = true;
+                        execdata.m_altstack = altstack;
+
+                        CScript annex_script = CScript(execdata.m_annex.begin() + 1, execdata.m_annex.end());
+                        bool success = EvalScript(stack, annex_script, flags, checker, sigversion, execdata, serror);
+                        if (!success) return false;
+                    }
+                }
+                break;
+
                 default:
                     return set_error(serror, SCRIPT_ERR_BAD_OPCODE);
             }
@@ -1785,7 +1801,7 @@ bool GenericTransactionSignatureChecker<T>::CheckSequence(const CScriptNum& nSeq
 template class GenericTransactionSignatureChecker<CTransaction>;
 template class GenericTransactionSignatureChecker<CMutableTransaction>;
 
-static bool ExecuteWitnessScript(const std::span<const valtype>& stack_span, const CScript& exec_script, unsigned int flags, SigVersion sigversion, const BaseSignatureChecker& checker, ScriptExecutionData& execdata, ScriptError* serror)
+static bool ExecuteWitnessScript(const std::span<const valtype>& stack_span, const CScript& exec_script, unsigned int flags, SigVersion sigversion, const BaseSignatureChecker& checker, ScriptExecutionData& execdata, ScriptError* serror, bool is_delegated_script)
 {
     std::vector<valtype> stack{stack_span.begin(), stack_span.end()};
 
@@ -1798,14 +1814,38 @@ static bool ExecuteWitnessScript(const std::span<const valtype>& stack_span, con
                 // Note how this condition would not be reached if an unknown OP_SUCCESSx was found
                 return set_error(serror, SCRIPT_ERR_BAD_OPCODE);
             }
+            if (opcode == OP_DELEGATE) {
+                if (flags & SCRIPT_VERIFY_DISCOURAGE_DELEGATE)
+                    return set_error(serror, SCRIPT_ERR_DISCOURAGE_OP_SUCCESS);
+                if (flags & SCRIPT_VERIFY_DELEGATE) {
+                    // Ignore OP_DELEGATE if annex is empty or has starting tag of 0x00
+                    if (execdata.m_annex.empty() || execdata.m_annex[0] == 0x00) continue;
+                    // Interpret the annex as a delegated script if starting tag is 0x01
+                    if (execdata.m_annex[0] == 0x01) {
+                        CScript annex_script = CScript(execdata.m_annex.begin() + 1, execdata.m_annex.end());
+                        if (!ExecuteWitnessScript(stack_span, annex_script, flags, sigversion, checker, execdata, serror, true)) {
+                            return false;
+                        }
+                        // Create OP_SUCCESS upgrade path for opcodes in the annex
+                        if (execdata.m_contains_op_success) return true;
+                        continue;
+                    }
+                    // Create OP_SUCCESS upgrade path for annexes with starting tags greater than 0x01, which can be used for new modes of delegation.
+                };
+                return set_success(serror);
+            }
             // New opcodes will be listed here. May use a different sigversion to modify existing opcodes.
             if (IsOpSuccess(opcode)) {
                 if (flags & SCRIPT_VERIFY_DISCOURAGE_OP_SUCCESS) {
                     return set_error(serror, SCRIPT_ERR_DISCOURAGE_OP_SUCCESS);
                 }
+                execdata.m_contains_op_success = true;
                 return set_success(serror);
             }
         }
+
+        // Skip stack validation if execscript is a delegated script
+        if (is_delegated_script) return true;
 
         // Tapscript enforces initial stack size limits (altstack is empty here)
         if (stack.size() > MAX_STACK_SIZE) return set_error(serror, SCRIPT_ERR_STACK_SIZE);
@@ -1823,6 +1863,11 @@ static bool ExecuteWitnessScript(const std::span<const valtype>& stack_span, con
     if (stack.size() != 1) return set_error(serror, SCRIPT_ERR_CLEANSTACK);
     if (!CastToBool(stack.back())) return set_error(serror, SCRIPT_ERR_EVAL_FALSE);
     return true;
+}
+
+static bool ExecuteWitnessScript(const std::span<const valtype>& stack_span, const CScript& exec_script, unsigned int flags, SigVersion sigversion, const BaseSignatureChecker& checker, ScriptExecutionData& execdata, ScriptError* serror)
+{
+    return ExecuteWitnessScript(stack_span, exec_script, flags, sigversion, checker, execdata, serror, false);
 }
 
 uint256 ComputeTapleafHash(uint8_t leaf_version, std::span<const unsigned char> script)
@@ -1908,6 +1953,7 @@ static bool VerifyWitnessProgram(const CScriptWitness& witness, int witversion, 
             // Drop annex (this is non-standard; see IsWitnessStandard)
             const valtype& annex = SpanPopBack(stack);
             execdata.m_annex_hash = (HashWriter{} << annex).GetSHA256();
+            execdata.m_annex = annex;
             execdata.m_annex_present = true;
         } else {
             execdata.m_annex_present = false;

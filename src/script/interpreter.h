@@ -143,6 +143,12 @@ enum : uint32_t {
     // Making unknown public key versions (in BIP 342 scripts) non-standard
     SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_PUBKEYTYPE = (1U << 20),
 
+    // Validating OP_DELEGATE
+    SCRIPT_VERIFY_DELEGATE = (1U << 21),
+
+    // Making OP_DELEGATE non-standard
+    SCRIPT_VERIFY_DISCOURAGE_DELEGATE = (1U << 22),
+
     // Constants to point to the highest flag in use. Add new flags above this line.
     //
     SCRIPT_VERIFY_END_MARKER
@@ -213,6 +219,16 @@ struct ScriptExecutionData
     bool m_annex_present;
     //! Hash of the annex data.
     uint256 m_annex_hash;
+    //! The annex data.
+    std::vector<unsigned char> m_annex;
+    //! Whether an annex script has been applied.
+    bool m_annex_script_applied = false;
+
+    //! Whether OP_SUCCESSx was encountered in tapscript.
+    bool m_contains_op_success = false;
+
+    //! The altstack
+    std::vector<std::vector<unsigned char>> m_altstack;
 
     //! Whether m_validation_weight_left is initialized.
     bool m_validation_weight_left_init = false;
