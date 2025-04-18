@@ -143,6 +143,14 @@ enum : uint32_t {
     // Making unknown public key versions (in BIP 342 scripts) non-standard
     SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_PUBKEYTYPE = (1U << 20),
 
+    // Allow P2TR exceeding 32 bytes (BIP XXX)
+    //
+    SCRIPT_VERIFY_TAPROOT_EXCEEDING_32_BYTES = (1U << 21),
+
+    // Making P2TR exceeding 32 bytes non-standard
+    //
+    SCRIPT_VERIFY_DISCOURAGE_TAPROOT_EXCEEDING_32_BYTES = (1U << 22),
+
     // Constants to point to the highest flag in use. Add new flags above this line.
     //
     SCRIPT_VERIFY_END_MARKER

@@ -1900,7 +1900,16 @@ static bool VerifyWitnessProgram(const CScriptWitness& witness, int witversion, 
         } else {
             return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_WRONG_LENGTH);
         }
-    } else if (witversion == 1 && program.size() == WITNESS_V1_TAPROOT_SIZE && !is_p2sh) {
+    } else if (witversion == 1 && program.size() >= WITNESS_V1_TAPROOT_SIZE && !is_p2sh) {
+        if (program.size() > WITNESS_V1_TAPROOT_SIZE) {
+            // BIPXXX Taproot: Ignore bytes exceeding 32-byte program
+            if (!(flags & SCRIPT_VERIFY_TAPROOT_EXCEEDING_32_BYTES)) return set_success(serror);
+            if (flags & SCRIPT_VERIFY_DISCOURAGE_TAPROOT_EXCEEDING_32_BYTES) {
+                return set_error(serror, SCRIPT_ERR_DISCOURAGE_TAPROOT_EXCEEDING_32_BYTES);
+            }
+        }
+        std::vector<unsigned char> active_program(program.begin(), program.begin() + 32);
+
         // BIP341 Taproot: 32-byte non-P2SH witness v1 program (which encodes a P2C-tweaked pubkey)
         if (!(flags & SCRIPT_VERIFY_TAPROOT)) return set_success(serror);
         if (stack.size() == 0) return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_WITNESS_EMPTY);
@@ -1915,7 +1924,7 @@ static bool VerifyWitnessProgram(const CScriptWitness& witness, int witversion, 
         execdata.m_annex_init = true;
         if (stack.size() == 1) {
             // Key path spending (stack size is 1 after removing optional annex)
-            if (!checker.CheckSchnorrSignature(stack.front(), program, SigVersion::TAPROOT, execdata, serror)) {
+            if (!checker.CheckSchnorrSignature(stack.front(), active_program, SigVersion::TAPROOT, execdata, serror)) {
                 return false; // serror is set
             }
             return set_success(serror);
@@ -1927,7 +1936,7 @@ static bool VerifyWitnessProgram(const CScriptWitness& witness, int witversion, 
                 return set_error(serror, SCRIPT_ERR_TAPROOT_WRONG_CONTROL_SIZE);
             }
             execdata.m_tapleaf_hash = ComputeTapleafHash(control[0] & TAPROOT_LEAF_MASK, script);
-            if (!VerifyTaprootCommitment(control, program, execdata.m_tapleaf_hash)) {
+            if (!VerifyTaprootCommitment(control, active_program, execdata.m_tapleaf_hash)) {
                 return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_MISMATCH);
             }
             execdata.m_tapleaf_hash_init = true;
