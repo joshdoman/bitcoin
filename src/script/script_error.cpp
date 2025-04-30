@@ -81,6 +81,8 @@ std::string ScriptErrorString(const ScriptError serror)
             return "Public key version reserved for soft-fork upgrades";
         case SCRIPT_ERR_PUBKEYTYPE:
             return "Public key is neither compressed or uncompressed";
+        case SCRIPT_ERR_DISCOURAGE_UPGRADABLE_ANNEX_VERSION:
+            return "Annex version reserved for soft-fork upgrades";
         case SCRIPT_ERR_CLEANSTACK:
             return "Stack size must be exactly one after execution";
         case SCRIPT_ERR_WITNESS_PROGRAM_WRONG_LENGTH:
@@ -111,6 +113,14 @@ std::string ScriptErrorString(const ScriptError serror)
             return "OP_CHECKMULTISIG(VERIFY) is not available in tapscript";
         case SCRIPT_ERR_TAPSCRIPT_MINIMALIF:
             return "OP_IF/NOTIF argument must be minimal in tapscript";
+        case SCRIPT_ERR_COMPOSED_PROGRAM_CLEANSTACK:
+            return "Stack must be empty after executing all composed programs";
+        case SCRIPT_ERR_INVALID_COMPOSED_PROGRAM:
+            return "Invalid composed program";
+        case SCRIPT_ERR_INVALID_COMPOSED_PROGRAM_STACK_SIZE:
+            return "Invalid composed program stack size";
+        case SCRIPT_ERR_INVALID_DELEGATED_PROGRAM:
+            return "Invalid delegated program";
         case SCRIPT_ERR_OP_CODESEPARATOR:
             return "Using OP_CODESEPARATOR in non-witness script";
         case SCRIPT_ERR_SIG_FINDANDDELETE:

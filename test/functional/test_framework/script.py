@@ -26,8 +26,10 @@ MAX_SCRIPT_ELEMENT_SIZE = 520
 MAX_PUBKEYS_PER_MULTI_A = 999
 LOCKTIME_THRESHOLD = 500000000
 ANNEX_TAG = 0x50
+ANNEX_DELEGATE_TAG = 0x01
 
 LEAF_VERSION_TAPSCRIPT = 0xc0
+LEAF_VERSION_GRAFTLEAF = 0xc2
 
 def hash160(s):
     return ripemd160(sha256(s))
@@ -809,7 +811,7 @@ def BIP341_sha_sequences(txTo):
 def BIP341_sha_outputs(txTo):
     return sha256(b"".join(o.serialize() for o in txTo.vout))
 
-def TaprootSignatureMsg(txTo, spent_utxos, hash_type, input_index=0, *, scriptpath=False, leaf_script=None, codeseparator_pos=-1, annex=None, leaf_ver=LEAF_VERSION_TAPSCRIPT):
+def TaprootSignatureMsg(txTo, spent_utxos, hash_type, input_index=0, *, scriptpath=False, leaf_script=None, codeseparator_pos=-1, annex=None, leaf_ver=LEAF_VERSION_TAPSCRIPT, prior_leafs=[], annex_chain=[]):
     assert (len(txTo.vin) == len(spent_utxos))
     assert (input_index < len(txTo.vin))
     out_type = SIGHASH_ALL if hash_type == 0 else hash_type & 3
@@ -838,18 +840,35 @@ def TaprootSignatureMsg(txTo, spent_utxos, hash_type, input_index=0, *, scriptpa
         ss += txTo.vin[input_index].nSequence.to_bytes(4, "little")
     else:
         ss += input_index.to_bytes(4, "little")
+    annex_chain_hash = None
+    for annex in annex_chain:
+        annex_chain_hash = sha256(sha256(ser_string(annex)) + annex_chain_hash) if annex_chain_hash is not None else sha256(ser_string(annex))
     if (spend_type & 1):
-        ss += sha256(ser_string(annex))
+        if annex_chain_hash is not None:
+            ss += annex_chain_hash
+        else:
+            ss += sha256(ser_string(annex))
+    elif annex_chain_hash is not None:
+        ss += annex_chain_hash
     if out_type == SIGHASH_SINGLE:
         if input_index < len(txTo.vout):
             ss += sha256(txTo.vout[input_index].serialize())
         else:
             ss += bytes(0 for _ in range(32))
+    leaf_chain_hash = None
+    for leaf in prior_leafs:
+        leaf_chain_hash = sha256(leaf.leaf_hash + leaf_chain_hash) if leaf_chain_hash is not None else leaf.leaf_hash
     if scriptpath:
-        ss += TaggedHash("TapLeaf", bytes([leaf_ver]) + ser_string(leaf_script))
+        leaf_hash = TaggedHash("TapLeaf", bytes([leaf_ver]) + ser_string(leaf_script))
+        if leaf_chain_hash:
+            ss += sha256(leaf_hash + leaf_chain_hash)
+        else:
+            ss += TaggedHash("TapLeaf", bytes([leaf_ver]) + ser_string(leaf_script))
         ss += bytes([0])
         ss += codeseparator_pos.to_bytes(4, "little", signed=True)
-    assert len(ss) == 175 - (in_type == SIGHASH_ANYONECANPAY) * 49 - (out_type != SIGHASH_ALL and out_type != SIGHASH_SINGLE) * 32 + (annex is not None) * 32 + scriptpath * 37
+    elif leaf_chain_hash is not None:
+        ss += leaf_chain_hash
+    assert len(ss) == 175 - (in_type == SIGHASH_ANYONECANPAY) * 49 - (out_type != SIGHASH_ALL and out_type != SIGHASH_SINGLE) * 32 + (annex is not None) * 32 + scriptpath * 37 + (scriptpath is False and leaf_chain_hash is not None) * 32
     return ss
 
 def TaprootSignatureHash(*args, **kwargs):
