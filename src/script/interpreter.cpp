@@ -1694,6 +1694,7 @@ bool GenericTransactionSignatureChecker<T>::CheckSchnorrSignature(Span<const uns
         return set_error(serror, SCRIPT_ERR_SCHNORR_SIG_HASHTYPE);
     }
     if (!VerifySchnorrSignature(sig, pubkey, sighash)) return set_error(serror, SCRIPT_ERR_SCHNORR_SIG);
+    execdata.m_annex_committed = execdata.m_annex_present;
     return true;
 }
 
@@ -1818,6 +1819,11 @@ static bool ExecuteWitnessScript(const Span<const valtype>& stack_span, const CS
 
     // Run the script interpreter.
     if (!EvalScript(stack, exec_script, flags, checker, sigversion, execdata, serror)) return false;
+
+    // Discourage uncommitted / unsigned annexes
+    if (execdata.m_annex_present && !execdata.m_annex_committed && (flags & SCRIPT_VERIFY_DISCOURAGE_UNCOMMITTED_ANNEX)) {
+        return set_error(serror, SCRIPT_ERR_DISCOURAGE_UNCOMMITTED_ANNEX);
+    }
 
     // Scripts inside witness implicitly require cleanstack behaviour
     if (stack.size() != 1) return set_error(serror, SCRIPT_ERR_CLEANSTACK);
