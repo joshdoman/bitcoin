@@ -224,7 +224,7 @@ struct ScriptExecutionData
     //! Hash of the chain of annexes in the execution path.
     uint256 m_annex_chain_hash;
     //! Whether the annex chain has been signed.
-    bool m_annex_chain_signed = true;
+    bool m_annex_chain_signed = false;
 
     //! Whether in delegated execution.
     bool m_delegated_execution_init = false;

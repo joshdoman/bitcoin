@@ -1312,6 +1312,7 @@ def spenders_graftleaf_active():
         ("optrue", CScript([CScriptOp(LEAF_VERSION_TAPSCRIPT), OP_1]), LEAF_VERSION_GRAFTLEAF),
         ("checksig", bytes([LEAF_VERSION_TAPSCRIPT]) + random_checksig_style(pubs[1]), LEAF_VERSION_GRAFTLEAF),
         ("checksig2", bytes([LEAF_VERSION_TAPSCRIPT]) + random_checksig_style(pubs[3]), LEAF_VERSION_GRAFTLEAF),
+        ("unkpk", bytes([LEAF_VERSION_TAPSCRIPT]) + random_checksig_style(random.randbytes(random.choice([x for x in range(2, 81) if x != 32]))), LEAF_VERSION_GRAFTLEAF),
         ("singlep2tr", bytes(child_tap.scriptPubKey), LEAF_VERSION_GRAFTLEAF),
     ]
     tap = taproot_construct(pubs[0], scripts)
@@ -1333,6 +1334,7 @@ def spenders_graftleaf_active():
     add_spender(spenders, "delegation/checksig", tap=tap, leaf="checksig", annex=annexes[2], standard=False, inputs=[[override(default_sign, key=secs[1])], [override(default_sign, key=secs[5])]], failure={"inputs": [[override(default_sign, key=secs[1])]]}, **ERR_EMPTY_WITNESS)
     add_spender(spenders, "delegation/invalid", tap=tap, leaf="checksig", inputs=[[getter("sign")]], key=secs[1], annex=None, standard=True, failure={"annex": annexes[3], "standard": False}, **ERR_INVALID_DELEGATED_PROGRAM)
     add_spender(spenders, "delegation/unsigned", tap=tap, leaf="optrue", inputs=[[]], annex=None, standard=True, failure={"annex": annexes[1], "standard": False}, **ERR_INVALID_DELEGATED_PROGRAM)
+    add_spender(spenders, "delegation/unkpk", tap=tap, leaf="optrue", inputs=[[]], annex=None, standard=True, failure={"leaf": "unkpk", "inputs": [[b'\x00']], "annex": annexes[1], "standard": False}, **ERR_INVALID_DELEGATED_PROGRAM)
 
     def child_ctx(leaf):
         return {**DEFAULT_CONTEXT, 'tap': child_tap, 'leaf': leaf}
@@ -1357,52 +1359,52 @@ def spenders_graftleaf_active():
 
     # == Test for sigops ratio limit in delegations ==
 
+    pubkey = pubs[1]
     annex = annexes[4]
     for hashtype in [SIGHASH_DEFAULT, SIGHASH_ALL]:
-        for pubkey in [pubs[1], random.randbytes(random.choice([x for x in range(2, 81) if x != 32]))]:
-            for fn_num, fn in enumerate(SIGOPS_RATIO_SCRIPTS):
-                merkledepth = random.randrange(129)
+        for fn_num, fn in enumerate(SIGOPS_RATIO_SCRIPTS):
+            merkledepth = random.randrange(129)
 
 
-                def predict_sigops_ratio(n, dummy_size):
-                    """Predict whether spending fn(n, pubkey) with dummy_size will pass the ratio test."""
-                    script, sigops = fn(n, pubkey)
-                    # Predict the size of the witness for a given choice of n
-                    keypath_sig_size = 64 + (hashtype != SIGHASH_DEFAULT)
-                    keypath_siglen_size = 1
-                    keypath_element_size = 2
-                    stacklen_size = 1
-                    sig_size = 64 + (hashtype != SIGHASH_DEFAULT)
-                    siglen_size = 1
-                    dummylen_size = 1 + 2 * (dummy_size >= 253)
-                    script_size = len(script)
-                    scriptlen_size = 1 + 2 * (script_size >= 253)
-                    control_size = 33 + 32 * merkledepth
-                    controllen_size = 1 + 2 * (control_size >= 253)
-                    annex_size = len(annex)
-                    annexlen_size = 1 + 2 * (annex_size >= 253)
-                    stacklen_element_size = 2
-                    witsize = keypath_sig_size + keypath_siglen_size + keypath_element_size + stacklen_size + sig_size + siglen_size + dummy_size + dummylen_size + script_size + scriptlen_size + control_size + controllen_size + annex_size + annexlen_size + stacklen_element_size
-                    # sigops ratio test (add 50 weight for delegated keypath sig)
-                    return witsize >= 50 * sigops
-                # Make sure n is high enough that with empty dummy, the script is not valid
-                n = 0
-                while predict_sigops_ratio(n, 0):
-                    n += 1
-                # But allow picking a bit higher still
-                n += random.randrange(5)
-                # Now pick dummy size *just* large enough that the overall construction passes
-                dummylen = 0
-                while not predict_sigops_ratio(n, dummylen):
-                    dummylen += 1
-                scripts = [("s", bytes(fn(n, pubkey)[0]), LEAF_VERSION_GRAFTLEAF)]
-                for _ in range(merkledepth):
-                    scripts = [scripts, random.choice(PARTNER_MERKLE_FN)]
-                tap = taproot_construct(pubs[0], scripts)
-                parent_ctx = {**DEFAULT_CONTEXT, 'tap': tap, 'leaf': 's'}
-                standard = annex is None and len(pubkey) == 32    # and dummylen <= 80
-                delegated_keypath_sig = override(default_sign, tap=delegated_tap, leaf=None, key=secs[2], annex=None, prior_tapleafs=[get(parent_ctx, "tapleaf")], prior_annexes=[annex])
-                add_spender(spenders, "delegation/sigopsratio_%i" % fn_num, tap=tap, leaf="s", annex=annex, hashtype=hashtype, key=secs[1], inputs=[[override(default_sign, annex=annex), random.randbytes(dummylen)], [delegated_keypath_sig]], standard=standard, failure={"inputs": [[override(default_sign, annex=annex), random.randbytes(dummylen - 1)], [delegated_keypath_sig]]}, **ERR_SIGOPS_RATIO)
+            def predict_sigops_ratio(n, dummy_size):
+                """Predict whether spending fn(n, pubkey) with dummy_size will pass the ratio test."""
+                script, sigops = fn(n, pubkey)
+                # Predict the size of the witness for a given choice of n
+                keypath_sig_size = 64 + (hashtype != SIGHASH_DEFAULT)
+                keypath_siglen_size = 1
+                keypath_element_size = 2
+                stacklen_size = 1
+                sig_size = 64 + (hashtype != SIGHASH_DEFAULT)
+                siglen_size = 1
+                dummylen_size = 1 + 2 * (dummy_size >= 253)
+                script_size = len(script)
+                scriptlen_size = 1 + 2 * (script_size >= 253)
+                control_size = 33 + 32 * merkledepth
+                controllen_size = 1 + 2 * (control_size >= 253)
+                annex_size = len(annex)
+                annexlen_size = 1 + 2 * (annex_size >= 253)
+                stacklen_element_size = 2
+                witsize = keypath_sig_size + keypath_siglen_size + keypath_element_size + stacklen_size + sig_size + siglen_size + dummy_size + dummylen_size + script_size + scriptlen_size + control_size + controllen_size + annex_size + annexlen_size + stacklen_element_size
+                # sigops ratio test (add 50 weight for delegated keypath sig)
+                return witsize >= 50 * sigops
+            # Make sure n is high enough that with empty dummy, the script is not valid
+            n = 0
+            while predict_sigops_ratio(n, 0):
+                n += 1
+            # But allow picking a bit higher still
+            n += random.randrange(5)
+            # Now pick dummy size *just* large enough that the overall construction passes
+            dummylen = 0
+            while not predict_sigops_ratio(n, dummylen):
+                dummylen += 1
+            scripts = [("s", bytes(fn(n, pubkey)[0]), LEAF_VERSION_GRAFTLEAF)]
+            for _ in range(merkledepth):
+                scripts = [scripts, random.choice(PARTNER_MERKLE_FN)]
+            tap = taproot_construct(pubs[0], scripts)
+            parent_ctx = {**DEFAULT_CONTEXT, 'tap': tap, 'leaf': 's'}
+            standard = annex is None and len(pubkey) == 32    # and dummylen <= 80
+            delegated_keypath_sig = override(default_sign, tap=delegated_tap, leaf=None, key=secs[2], annex=None, prior_tapleafs=[get(parent_ctx, "tapleaf")], prior_annexes=[annex])
+            add_spender(spenders, "delegation/sigopsratio_%i" % fn_num, tap=tap, leaf="s", annex=annex, hashtype=hashtype, key=secs[1], inputs=[[override(default_sign, annex=annex), random.randbytes(dummylen)], [delegated_keypath_sig]], standard=standard, failure={"inputs": [[override(default_sign, annex=annex), random.randbytes(dummylen - 1)], [delegated_keypath_sig]]}, **ERR_SIGOPS_RATIO)
 
 
     # == Test case for https://github.com/bitcoin/bitcoin/issues/24765 ==

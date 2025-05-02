@@ -380,7 +380,6 @@ static bool EvalChecksigTapscript(const valtype& sig, const valtype& pubkey, Scr
         }
     }
 
-    execdata.m_annex_chain_signed = true;
     return true;
 }
 
@@ -1700,6 +1699,7 @@ bool GenericTransactionSignatureChecker<T>::CheckSchnorrSignature(std::span<cons
         return set_error(serror, SCRIPT_ERR_SCHNORR_SIG_HASHTYPE);
     }
     if (!VerifySchnorrSignature(sig, pubkey, sighash)) return set_error(serror, SCRIPT_ERR_SCHNORR_SIG);
+    execdata.m_annex_chain_signed = execdata.m_annex_chain_present;
     return true;
 }
 
@@ -1935,7 +1935,6 @@ static bool VerifyWitnessProgramWithExecData(const CScriptWitness& witness, std:
             if (!checker.CheckSchnorrSignature(stack.front(), program, SigVersion::TAPROOT, execdata, serror)) {
                 return false; // serror is set
             }
-            execdata.m_annex_chain_signed = true;
             return set_success(serror);
         } else {
             // Script path spending (stack size is >1 after removing optional annex)
