@@ -143,6 +143,14 @@ enum : uint32_t {
     // Making unknown public key versions (in BIP 342 scripts) non-standard
     SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_PUBKEYTYPE = (1U << 20),
 
+    // Graftleaf validation (BIP XXX)
+    //
+    SCRIPT_VERIFY_GRAFTLEAF = (1U << 21),
+
+    // Making unknown annex versions non-standard (BIP XXX)
+    //
+    SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_ANNEX_VERSION = (1U << 22),
+
     // Constants to point to the highest flag in use. Add new flags above this line.
     //
     SCRIPT_VERIFY_END_MARKER
@@ -197,10 +205,10 @@ enum class SigVersion
 
 struct ScriptExecutionData
 {
-    //! Whether m_tapleaf_hash is initialized.
-    bool m_tapleaf_hash_init = false;
-    //! The tapleaf hash.
-    uint256 m_tapleaf_hash;
+    //! Whether m_tapleaf_chain_hash is initialized.
+    bool m_tapleaf_chain_hash_init = false;
+    //! Hash of the chain of tapleafs.
+    uint256 m_tapleaf_chain_hash;
 
     //! Whether m_codeseparator_pos is initialized.
     bool m_codeseparator_pos_init = false;
@@ -210,9 +218,20 @@ struct ScriptExecutionData
     //! Whether m_annex_present and (when needed) m_annex_hash are initialized.
     bool m_annex_init = false;
     //! Whether an annex is present.
-    bool m_annex_present;
-    //! Hash of the annex data.
-    uint256 m_annex_hash;
+    bool m_annex_present = false;
+    //! Whether an annex is present in the execution path.
+    bool m_annex_chain_present = false;
+    //! Hash of the chain of annexes in the execution path.
+    uint256 m_annex_chain_hash;
+    //! Whether the annex chain has been signed.
+    bool m_annex_chain_signed = false;
+
+    //! Whether in delegated execution.
+    bool m_delegated_execution_init = false;
+    //! The remaining stack for other execution environments.
+    std::span<const std::vector<unsigned char>> m_remaining_stack;
+    //! The maximum stack size when executing script.
+    size_t m_max_script_stack_size = MAX_STACK_SIZE;
 
     //! Whether m_validation_weight_left is initialized.
     bool m_validation_weight_left_init = false;
@@ -230,6 +249,7 @@ static constexpr size_t WITNESS_V1_TAPROOT_SIZE = 32;
 
 static constexpr uint8_t TAPROOT_LEAF_MASK = 0xfe;
 static constexpr uint8_t TAPROOT_LEAF_TAPSCRIPT = 0xc0;
+static constexpr uint8_t TAPROOT_LEAF_GRAFTLEAF = 0xc2;
 static constexpr size_t TAPROOT_CONTROL_BASE_SIZE = 33;
 static constexpr size_t TAPROOT_CONTROL_NODE_SIZE = 32;
 static constexpr size_t TAPROOT_CONTROL_MAX_NODE_COUNT = 128;

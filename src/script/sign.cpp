@@ -78,8 +78,8 @@ bool MutableTransactionSignatureCreator::CreateSchnorrSig(const SigningProvider&
         execdata.m_codeseparator_pos_init = true;
         execdata.m_codeseparator_pos = 0xFFFFFFFF; // Only support non-OP_CODESEPARATOR BIP342 signing for now.
         if (!leaf_hash) return false; // BIP342 signing needs leaf hash.
-        execdata.m_tapleaf_hash_init = true;
-        execdata.m_tapleaf_hash = *leaf_hash;
+        execdata.m_tapleaf_chain_hash_init = true;
+        execdata.m_tapleaf_chain_hash = *leaf_hash;
     }
     uint256 hash;
     if (!SignatureHashSchnorr(hash, execdata, m_txto, nIn, nHashType, sigversion, *m_txdata, MissingDataBehavior::FAIL)) return false;

@@ -93,6 +93,7 @@ BASE_SCRIPTS = [
     # Longest test should go first, to favor running tests in parallel
     # vv Tests less than 5m vv
     'feature_fee_estimation.py',
+    'feature_graftleaf.py',
     'feature_taproot.py',
     'feature_block.py',
     'mempool_ephemeral_dust.py',

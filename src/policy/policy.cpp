@@ -294,6 +294,9 @@ bool IsWitnessStandard(const CTransaction& tx, const CCoinsViewCache& mapInputs)
                     for (const auto& item : stack) {
                         if (item.size() > MAX_STANDARD_TAPSCRIPT_STACK_ITEM_SIZE) return false;
                     }
+                } else if ((control_block[0] & TAPROOT_LEAF_MASK) == TAPROOT_LEAF_GRAFTLEAF) {
+                    // BIP XXX Graftleaf (leaf version 0xc2)
+                    // TODO: Implement stack item size checks
                 }
             } else if (stack.size() == 1) {
                 // Key path spend (1 stack element after removing optional annex)

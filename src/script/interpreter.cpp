@@ -1218,7 +1218,7 @@ bool EvalScript(std::vector<std::vector<unsigned char> >& stack, const CScript& 
             }
 
             // Size limits
-            if (stack.size() + altstack.size() > MAX_STACK_SIZE)
+            if (stack.size() + altstack.size() > execdata.m_max_script_stack_size)
                 return set_error(serror, SCRIPT_ERR_STACK_SIZE);
         }
     }
@@ -1536,8 +1536,8 @@ bool SignatureHashSchnorr(uint256& hash_out, ScriptExecutionData& execdata, cons
     } else {
         ss << in_pos;
     }
-    if (have_annex) {
-        ss << execdata.m_annex_hash;
+    if (have_annex || execdata.m_annex_chain_present) {
+        ss << execdata.m_annex_chain_hash;
     }
 
     // Data about the output (if only one).
@@ -1553,11 +1553,16 @@ bool SignatureHashSchnorr(uint256& hash_out, ScriptExecutionData& execdata, cons
 
     // Additional data for BIP 342 signatures
     if (sigversion == SigVersion::TAPSCRIPT) {
-        assert(execdata.m_tapleaf_hash_init);
-        ss << execdata.m_tapleaf_hash;
+        assert(execdata.m_tapleaf_chain_hash_init);
+        ss << execdata.m_tapleaf_chain_hash;
         ss << key_version;
         assert(execdata.m_codeseparator_pos_init);
         ss << execdata.m_codeseparator_pos;
+    }
+
+    if (sigversion == SigVersion::TAPROOT && execdata.m_tapleaf_chain_hash_init) {
+        // Data about prior leafs (for composed keypath spends)
+        ss << execdata.m_tapleaf_chain_hash;
     }
 
     hash_out = ss.GetSHA256();
@@ -1694,6 +1699,7 @@ bool GenericTransactionSignatureChecker<T>::CheckSchnorrSignature(std::span<cons
         return set_error(serror, SCRIPT_ERR_SCHNORR_SIG_HASHTYPE);
     }
     if (!VerifySchnorrSignature(sig, pubkey, sighash)) return set_error(serror, SCRIPT_ERR_SCHNORR_SIG);
+    execdata.m_annex_chain_signed = execdata.m_annex_chain_present;
     return true;
 }
 
@@ -1808,7 +1814,7 @@ static bool ExecuteWitnessScript(const std::span<const valtype>& stack_span, con
         }
 
         // Tapscript enforces initial stack size limits (altstack is empty here)
-        if (stack.size() > MAX_STACK_SIZE) return set_error(serror, SCRIPT_ERR_STACK_SIZE);
+        if (stack.size() > execdata.m_max_script_stack_size) return set_error(serror, SCRIPT_ERR_STACK_SIZE);
     }
 
     // Disallow stack item size > MAX_SCRIPT_ELEMENT_SIZE in witness stack
@@ -1870,11 +1876,12 @@ static bool VerifyTaprootCommitment(const std::vector<unsigned char>& control, c
     return q.CheckTapTweak(p, merkle_root, control[0] & 1);
 }
 
-static bool VerifyWitnessProgram(const CScriptWitness& witness, int witversion, const std::vector<unsigned char>& program, unsigned int flags, const BaseSignatureChecker& checker, ScriptError* serror, bool is_p2sh)
+static bool VerifyGraftleaf(const CScriptWitness& witness, std::span<const std::vector<unsigned char>> stack, const std::vector<unsigned char>& program, const std::optional<std::vector<unsigned char>>& annex, unsigned int flags, const BaseSignatureChecker& checker, ScriptExecutionData& execdata, ScriptError* serror);
+
+static bool VerifyWitnessProgramWithExecData(const CScriptWitness& witness, std::span<const std::vector<unsigned char>> stack, int witversion, const std::vector<unsigned char>& program, unsigned int flags, const BaseSignatureChecker& checker, ScriptExecutionData& execdata, ScriptError* serror, bool is_p2sh)
 {
     CScript exec_script; //!< Actually executed script (last stack item in P2WSH; implied P2PKH script in P2WPKH; leaf script in P2TR)
-    std::span stack{witness.stack};
-    ScriptExecutionData execdata;
+    std::optional<std::vector<unsigned char>> annex;
 
     if (witversion == 0) {
         if (program.size() == WITNESS_V0_SCRIPTHASH_SIZE) {
@@ -1905,16 +1912,26 @@ static bool VerifyWitnessProgram(const CScriptWitness& witness, int witversion, 
         if (!(flags & SCRIPT_VERIFY_TAPROOT)) return set_success(serror);
         if (stack.size() == 0) return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_WITNESS_EMPTY);
         if (stack.size() >= 2 && !stack.back().empty() && stack.back()[0] == ANNEX_TAG) {
-            // Drop annex (this is non-standard; see IsWitnessStandard)
-            const valtype& annex = SpanPopBack(stack);
-            execdata.m_annex_hash = (HashWriter{} << annex).GetSHA256();
+            // Keep annex (remains non-standard; see IsWitnessStandard)
+            annex = SpanPopBack(stack);
+            uint256 annex_hash = (HashWriter{} << annex.value()).GetSHA256();
+            execdata.m_annex_chain_hash = execdata.m_annex_chain_present ? (HashWriter{} << annex_hash << execdata.m_annex_chain_hash).GetSHA256() : annex_hash;
             execdata.m_annex_present = true;
+            execdata.m_annex_chain_present = true;
+            execdata.m_annex_chain_signed = false;
         } else {
             execdata.m_annex_present = false;
         }
         execdata.m_annex_init = true;
+        if (!execdata.m_validation_weight_left_init) {
+            // Initialize the validation weight left
+            execdata.m_validation_weight_left = ::GetSerializeSize(witness.stack) + VALIDATION_WEIGHT_OFFSET;
+            execdata.m_validation_weight_left_init = true;
+        }
         if (stack.size() == 1) {
             // Key path spending (stack size is 1 after removing optional annex)
+            execdata.m_validation_weight_left -= VALIDATION_WEIGHT_PER_SIGOP_PASSED;
+            if (execdata.m_validation_weight_left < 0) return set_error(serror, SCRIPT_ERR_TAPSCRIPT_VALIDATION_WEIGHT);
             if (!checker.CheckSchnorrSignature(stack.front(), program, SigVersion::TAPROOT, execdata, serror)) {
                 return false; // serror is set
             }
@@ -1926,17 +1943,20 @@ static bool VerifyWitnessProgram(const CScriptWitness& witness, int witversion, 
             if (control.size() < TAPROOT_CONTROL_BASE_SIZE || control.size() > TAPROOT_CONTROL_MAX_SIZE || ((control.size() - TAPROOT_CONTROL_BASE_SIZE) % TAPROOT_CONTROL_NODE_SIZE) != 0) {
                 return set_error(serror, SCRIPT_ERR_TAPROOT_WRONG_CONTROL_SIZE);
             }
-            execdata.m_tapleaf_hash = ComputeTapleafHash(control[0] & TAPROOT_LEAF_MASK, script);
-            if (!VerifyTaprootCommitment(control, program, execdata.m_tapleaf_hash)) {
+            uint256 tapleaf_hash = ComputeTapleafHash(control[0] & TAPROOT_LEAF_MASK, script);
+            if (!VerifyTaprootCommitment(control, program, tapleaf_hash)) {
                 return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_MISMATCH);
             }
-            execdata.m_tapleaf_hash_init = true;
+            execdata.m_tapleaf_chain_hash = execdata.m_tapleaf_chain_hash_init ? (HashWriter{} << tapleaf_hash << execdata.m_tapleaf_chain_hash).GetSHA256() : tapleaf_hash;
+            execdata.m_tapleaf_chain_hash_init = true;
             if ((control[0] & TAPROOT_LEAF_MASK) == TAPROOT_LEAF_TAPSCRIPT) {
                 // Tapscript (leaf version 0xc0)
                 exec_script = CScript(script.begin(), script.end());
-                execdata.m_validation_weight_left = ::GetSerializeSize(witness.stack) + VALIDATION_WEIGHT_OFFSET;
-                execdata.m_validation_weight_left_init = true;
                 return ExecuteWitnessScript(stack, exec_script, flags, SigVersion::TAPSCRIPT, checker, execdata, serror);
+            } else if ((control[0] & TAPROOT_LEAF_MASK) == TAPROOT_LEAF_GRAFTLEAF) {
+                // BIP XXX Graftleaf (leaf version 0xc2)
+                if (!(flags & SCRIPT_VERIFY_GRAFTLEAF)) return set_success(serror);
+                return VerifyGraftleaf(witness, stack, script, annex, flags, checker, execdata, serror);
             }
             if (flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_TAPROOT_VERSION) {
                 return set_error(serror, SCRIPT_ERR_DISCOURAGE_UPGRADABLE_TAPROOT_VERSION);
@@ -1953,6 +1973,99 @@ static bool VerifyWitnessProgram(const CScriptWitness& witness, int witversion, 
         return true;
     }
     // There is intentionally no return statement here, to be able to use "control reaches end of non-void function" warnings to detect gaps in the logic above.
+}
+
+static bool VerifyWitnessProgram(const CScriptWitness& witness, int witversion, const std::vector<unsigned char>& program, unsigned int flags, const BaseSignatureChecker& checker, ScriptError* serror, bool is_p2sh)
+{
+    ScriptExecutionData execdata;
+    return VerifyWitnessProgramWithExecData(witness, std::span(witness.stack), witversion, program, flags, checker, execdata, serror, is_p2sh);
+}
+
+static bool VerifyComposedWitnessProgram(const CScriptWitness& witness, std::span<const std::vector<unsigned char>> stack, const std::vector<unsigned char>& program, unsigned int program_index, unsigned int flags, const BaseSignatureChecker& checker, ScriptExecutionData& execdata, ScriptError* serror)
+{
+    while (program_index < program.size()) {
+        if (stack.empty()) return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_WITNESS_EMPTY);
+
+        // Last stack element encodes the number of child stack elements for the current program
+        const valtype& size_element = SpanPopBack(stack);
+        if (size_element.size() > 2) return set_error(serror, SCRIPT_ERR_INVALID_COMPOSED_PROGRAM_STACK_SIZE);
+        size_t stack_size = std::accumulate(size_element.begin(), size_element.end(), 0, [](size_t size, uint8_t b){ return (size << 8) | b; });
+        if (stack_size > stack.size()) return set_error(serror, SCRIPT_ERR_INVALID_COMPOSED_PROGRAM_STACK_SIZE);
+        execdata.m_remaining_stack = stack.subspan(stack_size);
+
+        // Witness version is the first byte in program
+        unsigned char witversion = program[program_index];
+        if (witversion == OP_0) {
+            // Forbid v0 witness programs
+            return set_error(serror, SCRIPT_ERR_INVALID_COMPOSED_PROGRAM);
+        } else if (witversion == TAPROOT_LEAF_TAPSCRIPT) {
+            // Apply script
+            CScript exec_script = CScript(program.begin() + program_index + 1, program.end());
+            return ExecuteWitnessScript(stack.subspan(0, stack_size), exec_script, flags, SigVersion::TAPSCRIPT, checker, execdata, serror);
+        } else if (witversion == OP_1) {
+            // Apply v1 witness program
+            if (program_index + 1 == program.size()) return set_error(serror, SCRIPT_ERR_INVALID_COMPOSED_PROGRAM);
+            unsigned char program_size = program[program_index + 1];
+            if (program_index + program_size + 2 > program.size()) return set_error(serror, SCRIPT_ERR_INVALID_COMPOSED_PROGRAM);
+            valtype subprogram(program.begin() + program_index + 2, program.begin() + program_index + program_size + 2);
+            ScriptExecutionData cached_execdata = execdata;
+            if (!VerifyWitnessProgramWithExecData(witness, stack.subspan(0, stack_size), 1, subprogram, flags, checker, execdata, serror, false)) {
+                return false;
+            }
+            stack = stack.subspan(stack_size);
+            program_index += program_size + 2;
+            cached_execdata.m_annex_chain_signed = execdata.m_annex_chain_signed;
+            cached_execdata.m_validation_weight_left = execdata.m_validation_weight_left;
+            execdata = cached_execdata;
+        } else {
+            // Other versions return true for future softfork compatibility
+            if (flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_WITNESS_PROGRAM) {
+                return set_error(serror, SCRIPT_ERR_DISCOURAGE_UPGRADABLE_WITNESS_PROGRAM);
+            }
+            return set_success(serror);
+        }
+    }
+    return set_success(serror);
+}
+
+static bool VerifyGraftleaf(const CScriptWitness& witness, std::span<const std::vector<unsigned char>> stack, const std::vector<unsigned char>& program, const std::optional<std::vector<unsigned char>>& annex, unsigned int flags, const BaseSignatureChecker& checker, ScriptExecutionData& execdata, ScriptError* serror)
+{
+    // Verify the total stack size does not exceed `MAX_STACK_SIZE / 2`.
+    if (stack.size() > MAX_STACK_SIZE / 2) return set_error(serror, SCRIPT_ERR_STACK_SIZE);
+
+    // Ensure the script stack size does not exceed `MAX_STACK_SIZE / 2`.
+    execdata.m_max_script_stack_size = MAX_STACK_SIZE / 2;
+
+    // Verify the program
+    execdata.m_remaining_stack = stack;
+    if (!VerifyComposedWitnessProgram(witness, stack, program, 0, flags, checker, execdata, serror)) {
+        return false;
+    }
+
+    // No elements may remain on the stack if program is empty, annex is absent, annex is empty, or annex starts with 0x00 after annex tag
+    if (program.empty() || !annex.has_value() || annex->size() < 2 || annex->at(1) == 0x00) {
+        if (execdata.m_remaining_stack.size() > 0) return set_error(serror, SCRIPT_ERR_COMPOSED_PROGRAM_CLEANSTACK);
+        return set_success(serror);
+    }
+
+    if (annex->at(1) == 0x01) {
+        // Verify the delegated program (annex must be signed and have at least 3 bytes)
+        if (!execdata.m_annex_chain_signed || annex->size() < 3) return set_error(serror, SCRIPT_ERR_INVALID_DELEGATED_PROGRAM);
+        valtype program(annex->begin() + 2, annex->end());
+        execdata.m_delegated_execution_init = true;
+        if (!VerifyComposedWitnessProgram(witness, execdata.m_remaining_stack, program, 0, flags, checker, execdata, serror)) {
+            return false;
+        }
+        // No elements may remain on the stack
+        if (execdata.m_remaining_stack.size() > 0) return set_error(serror, SCRIPT_ERR_COMPOSED_PROGRAM_CLEANSTACK);
+        return set_success(serror);
+    }
+
+    // Upgrade path to new uses of the annex and modes of delegation
+    if (flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_ANNEX_VERSION) {
+        return set_error(serror, SCRIPT_ERR_DISCOURAGE_UPGRADABLE_ANNEX_VERSION);
+    }
+    return set_success(serror);
 }
 
 bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const CScriptWitness* witness, unsigned int flags, const BaseSignatureChecker& checker, ScriptError* serror)
