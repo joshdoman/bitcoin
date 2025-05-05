@@ -356,9 +356,16 @@ static bool EvalChecksigFromStack(const valtype& sig, const valtype& msg, const 
         // Implement the sigops/witnesssize ratio test.
         // Passing with an upgradable public key version is also counted.
         assert(execdata.m_validation_weight_left_init);
-        execdata.m_validation_weight_left -= VALIDATION_WEIGHT_PER_SIGOP_PASSED;
-        if (execdata.m_validation_weight_left < 0) {
-            return set_error(serror, SCRIPT_ERR_TAPSCRIPT_VALIDATION_WEIGHT);
+        if (execdata.m_csfs_credits_left > 0) {
+            // Use credit from previous call to OP_SIGHASH
+            execdata.m_csfs_credits_left -= 1;
+        } else {
+            execdata.m_validation_weight_left -= VALIDATION_WEIGHT_PER_SIGOP_PASSED;
+            if (execdata.m_validation_weight_left < 0) {
+                return set_error(serror, SCRIPT_ERR_TAPSCRIPT_VALIDATION_WEIGHT);
+            }
+            // Credit one "free" OP_SIGHASH
+            execdata.m_sighash_credits_left += 1;
         }
     }
     if (pubkey_in.size() == 0) {
@@ -1293,6 +1300,54 @@ bool EvalScript(std::vector<std::vector<unsigned char> >& stack, const CScript& 
                 }
                 break;
 
+                case OP_SIGHASH:
+                {
+                    // OP_SIGHASH is only available in Tapscript
+                    if (sigversion == SigVersion::BASE || sigversion == SigVersion::WITNESS_V0) {
+                        return set_error(serror, SCRIPT_ERR_BAD_OPCODE);
+                    }
+
+                    if (stack.size() < 1) {
+                        return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                    }
+
+                    valtype vch = stacktop(-1);
+                    popstack(stack);
+
+                    if (vch.size() > 2) {
+                        return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                    }
+
+                    if (sigversion == SigVersion::TAPSCRIPT) {
+                        // Implement the sigops/witnesssize ratio test.
+                        assert(execdata.m_validation_weight_left_init);
+                        if (execdata.m_sighash_credits_left > 0) {
+                            // Use credit from previous call to OP_CHECKSIGFROMSTACK
+                            execdata.m_sighash_credits_left -= 1;
+                        } else {
+                            execdata.m_validation_weight_left -= VALIDATION_WEIGHT_PER_SIGOP_PASSED;
+                            if (execdata.m_validation_weight_left < 0) {
+                                return set_error(serror, SCRIPT_ERR_TAPSCRIPT_VALIDATION_WEIGHT);
+                            }
+                            // Credit one "free" OP_CHECKSIGFROMSTACK
+                            execdata.m_csfs_credits_left += 1;
+                        }
+                    }
+
+                    uint16_t include = vch.empty() ? 0xFFFF : 0; // (default: SIGHASH_ALL)
+
+                    for (size_t i = 0; i < vch.size(); i++) {
+                        include |= (uint16_t) vch[i] << (8 * i);
+                    }
+
+                    uint256 sighash;
+                    if (!checker.GetSignatureHashSchnorr(sighash, include, SigVersion::TAPSCRIPT, execdata, serror)) {
+                        return false;
+                    }
+                    stack.push_back(valtype(sighash.begin(), sighash.end()));
+                }
+                break;
+
                 default:
                     return set_error(serror, SCRIPT_ERR_BAD_OPCODE);
             }
@@ -1555,7 +1610,7 @@ static bool HandleMissingData(MissingDataBehavior mdb)
 }
 
 template<typename T>
-bool SignatureHashSchnorr(uint256& hash_out, ScriptExecutionData& execdata, const T& tx_to, uint32_t in_pos, uint8_t hash_type, SigVersion sigversion, const PrecomputedTransactionData& cache, MissingDataBehavior mdb)
+bool SignatureHashSchnorr(uint256& hash_out, ScriptExecutionData& execdata, const T& tx_to, uint32_t in_pos, uint8_t hash_type, SigVersion sigversion, const PrecomputedTransactionData& cache, MissingDataBehavior mdb, uint16_t include)
 {
     uint8_t ext_flag, key_version;
     switch (sigversion) {
@@ -1592,32 +1647,32 @@ bool SignatureHashSchnorr(uint256& hash_out, ScriptExecutionData& execdata, cons
     ss << hash_type;
 
     // Transaction level data
-    ss << tx_to.version;
-    ss << tx_to.nLockTime;
+    if (include & (1 << 0)) ss << tx_to.version;
+    if (include & (1 << 1)) ss << tx_to.nLockTime;
     if (input_type != SIGHASH_ANYONECANPAY) {
-        ss << cache.m_prevouts_single_hash;
-        ss << cache.m_spent_amounts_single_hash;
-        ss << cache.m_spent_scripts_single_hash;
-        ss << cache.m_sequences_single_hash;
+        if (include & (1 << 2)) ss << cache.m_prevouts_single_hash;
+        if (include & (1 << 3)) ss << cache.m_spent_amounts_single_hash;
+        if (include & (1 << 4)) ss << cache.m_spent_scripts_single_hash;
+        if (include & (1 << 5)) ss << cache.m_sequences_single_hash;
     }
     if (output_type == SIGHASH_ALL) {
-        ss << cache.m_outputs_single_hash;
+        if (include & (1 << 6)) ss << cache.m_outputs_single_hash;
     }
 
     // Data about the input/prevout being spent
     assert(execdata.m_annex_init);
     const bool have_annex = execdata.m_annex_present;
     const uint8_t spend_type = (ext_flag << 1) + (have_annex ? 1 : 0); // The low bit indicates whether an annex is present.
-    ss << spend_type;
+    if (include & (1 << 7)) ss << spend_type;
     if (input_type == SIGHASH_ANYONECANPAY) {
-        ss << tx_to.vin[in_pos].prevout;
-        ss << cache.m_spent_outputs[in_pos];
-        ss << tx_to.vin[in_pos].nSequence;
+        if (include & (1 << 8)) ss << tx_to.vin[in_pos].prevout;
+        if (include & (1 << 9)) ss << cache.m_spent_outputs[in_pos];
+        if (include & (1 << 10)) ss << tx_to.vin[in_pos].nSequence;
     } else {
-        ss << in_pos;
+        if (include & (1 << 8)) ss << in_pos;
     }
     if (have_annex) {
-        ss << execdata.m_annex_hash;
+        if (include & (1 << 11)) ss << execdata.m_annex_hash;
     }
 
     // Data about the output (if only one).
@@ -1628,16 +1683,16 @@ bool SignatureHashSchnorr(uint256& hash_out, ScriptExecutionData& execdata, cons
             sha_single_output << tx_to.vout[in_pos];
             execdata.m_output_hash = sha_single_output.GetSHA256();
         }
-        ss << execdata.m_output_hash.value();
+        if (include & (1 << 12)) ss << execdata.m_output_hash.value();
     }
 
     // Additional data for BIP 342 signatures
     if (sigversion == SigVersion::TAPSCRIPT) {
         assert(execdata.m_tapleaf_hash_init);
-        ss << execdata.m_tapleaf_hash;
-        ss << key_version;
+        if (include & (1 << 13)) ss << execdata.m_tapleaf_hash;
+        if (include & (1 << 14)) ss << key_version;
         assert(execdata.m_codeseparator_pos_init);
-        ss << execdata.m_codeseparator_pos;
+        if (include & (1 << 15)) ss << execdata.m_codeseparator_pos;
     }
 
     hash_out = ss.GetSHA256();
@@ -1778,6 +1833,31 @@ bool GenericTransactionSignatureChecker<T>::CheckSchnorrSignature(std::span<cons
 }
 
 template <class T>
+bool GenericTransactionSignatureChecker<T>::GetSignatureHashSchnorr(uint256& hash_out, uint16_t include, SigVersion sigversion, ScriptExecutionData& execdata, ScriptError* serror) const
+{
+    uint8_t hash_type;
+
+    if ((include & (1 << 6))) {
+        hash_type = SIGHASH_ALL;
+    } else if (include & (1 << 12)) {
+        hash_type = SIGHASH_SINGLE;
+    } else {
+        hash_type = SIGHASH_NONE;
+    }
+
+    const uint16_t PREVOUT_MASK = (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5); // 0x3C
+    if (!(include & PREVOUT_MASK)) {
+        hash_type |= SIGHASH_ANYONECANPAY;
+    }
+
+    if (!this->txdata) return HandleMissingData(m_mdb);
+    if (!SignatureHashSchnorr(hash_out, execdata, *txTo, nIn, hash_type, sigversion, *this->txdata, m_mdb, include)) {
+        return set_error(serror, SCRIPT_ERR_SCHNORR_SIG_HASHTYPE);
+    }
+    return true;
+}
+
+template <class T>
 bool GenericTransactionSignatureChecker<T>::CheckLockTime(const CScriptNum& nLockTime) const
 {
     // There are two kinds of nLockTime: lock-by-blockheight
@@ -1884,6 +1964,12 @@ static bool ExecuteWitnessScript(const std::span<const valtype>& stack_span, con
                     if (flags & SCRIPT_VERIFY_DISCOURAGE_CHECKSIGFROMSTACK) {
                         return set_error(serror, SCRIPT_ERR_DISCOURAGE_OP_SUCCESS);
                     } else if (!(flags & SCRIPT_VERIFY_CHECKSIGFROMSTACK)) {
+                        return set_success(serror);
+                    }
+                } else if (opcode == OP_SIGHASH) {
+                    if (flags & SCRIPT_VERIFY_DISCOURAGE_SIGHASH) {
+                        return set_error(serror, SCRIPT_ERR_DISCOURAGE_OP_SUCCESS);
+                    } else if (!(flags & SCRIPT_VERIFY_SIGHASH)) {
                         return set_success(serror);
                     }
                 } else {
