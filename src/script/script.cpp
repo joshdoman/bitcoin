@@ -151,6 +151,7 @@ std::string GetOpName(opcodetype opcode)
 
     // Tapscript expansion
     case OP_CHECKSIGFROMSTACK       : return "OP_CHECKSIGFROMSTACK";
+    case OP_SIGHASH                 : return "OP_SIGHASH";
 
     case OP_INVALIDOPCODE          : return "OP_INVALIDOPCODE";
 

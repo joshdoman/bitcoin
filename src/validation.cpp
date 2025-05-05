@@ -1233,10 +1233,12 @@ bool MemPoolAccept::PolicyScriptChecks(const ATMPArgs& args, Workspace& ws)
 
     unsigned int scriptVerifyFlags = STANDARD_SCRIPT_VERIFY_FLAGS;
 
-    // CHECKSIGFROMSTACK (BIP348) is always active on regtest, but no other chain.
+    // CHECKSIGFROMSTACK (BIP348) and SIGHASH (BIPXXX) are always active on regtest, but no other chain.
     if (args.m_chainparams.GetChainType() == ChainType::REGTEST) {
         scriptVerifyFlags |= SCRIPT_VERIFY_CHECKSIGFROMSTACK;
         scriptVerifyFlags &= ~SCRIPT_VERIFY_DISCOURAGE_CHECKSIGFROMSTACK;
+        scriptVerifyFlags |= SCRIPT_VERIFY_SIGHASH;
+        scriptVerifyFlags &= ~SCRIPT_VERIFY_DISCOURAGE_SIGHASH;
     }
 
     // Check input scripts and signatures.
@@ -2393,6 +2395,11 @@ static unsigned int GetBlockScriptFlags(const CBlockIndex& block_index, const Ch
     // Enforce CHECKSIGFROMSTACK (BIP348)
     if (DeploymentActiveAt(block_index, chainman, Consensus::DEPLOYMENT_CSFS)) {
         flags |= SCRIPT_VERIFY_CHECKSIGFROMSTACK;
+    }
+
+    // Enforce OP_SIGHASH (BIPXXX)
+    if (DeploymentActiveAt(block_index, chainman, Consensus::DEPLOYMENT_SIGHASH)) {
+        flags |= SCRIPT_VERIFY_SIGHASH;
     }
 
     // Enforce the DERSIG (BIP66) rule

@@ -149,6 +149,12 @@ enum : uint32_t {
     // Making OP_CHECKSIGFROMSTACK(VERIFY) non-standard
     SCRIPT_VERIFY_DISCOURAGE_CHECKSIGFROMSTACK = (1U << 22),
 
+    // Validating OP_SIGHASH
+    SCRIPT_VERIFY_SIGHASH = (1U << 23),
+
+    // Making OP_CHECKSIGFROMSTACK non-standard
+    SCRIPT_VERIFY_DISCOURAGE_SIGHASH = (1U << 24),
+
     // Constants to point to the highest flag in use. Add new flags above this line.
     //
     SCRIPT_VERIFY_END_MARKER
@@ -224,6 +230,10 @@ struct ScriptExecutionData
     bool m_validation_weight_left_init = false;
     //! How much validation weight is left (decremented for every successful non-empty signature check).
     int64_t m_validation_weight_left;
+    //! How many times CHECKSIGFROMSTACK can be called without decrementing `m_validation_weight_left`.
+    uint32_t m_csfs_credits_left = 0;
+    //! How many times SIGHASH can be called without decrementing `m_validation_weight_left`.
+    uint32_t m_sighash_credits_left = 0;
 
     //! The hash of the corresponding output
     std::optional<uint256> m_output_hash;
@@ -261,6 +271,11 @@ public:
         return false;
     }
 
+    virtual bool GetSignatureHashSchnorr(uint256& hash_out, uint16_t include, SigVersion sigversion, ScriptExecutionData& execdata, ScriptError* serror) const
+    {
+        return false;
+    }
+
     virtual bool CheckLockTime(const CScriptNum& nLockTime) const
     {
          return false;
@@ -284,7 +299,7 @@ enum class MissingDataBehavior
 };
 
 template<typename T>
-bool SignatureHashSchnorr(uint256& hash_out, ScriptExecutionData& execdata, const T& tx_to, uint32_t in_pos, uint8_t hash_type, SigVersion sigversion, const PrecomputedTransactionData& cache, MissingDataBehavior mdb);
+bool SignatureHashSchnorr(uint256& hash_out, ScriptExecutionData& execdata, const T& tx_to, uint32_t in_pos, uint8_t hash_type, SigVersion sigversion, const PrecomputedTransactionData& cache, MissingDataBehavior mdb, uint16_t include = 0xFFFF);
 
 template <class T>
 class GenericTransactionSignatureChecker : public BaseSignatureChecker
@@ -305,6 +320,7 @@ public:
     GenericTransactionSignatureChecker(const T* txToIn, unsigned int nInIn, const CAmount& amountIn, const PrecomputedTransactionData& txdataIn, MissingDataBehavior mdb) : txTo(txToIn), m_mdb(mdb), nIn(nInIn), amount(amountIn), txdata(&txdataIn) {}
     bool CheckECDSASignature(const std::vector<unsigned char>& scriptSig, const std::vector<unsigned char>& vchPubKey, const CScript& scriptCode, SigVersion sigversion) const override;
     bool CheckSchnorrSignature(std::span<const unsigned char> sig, std::span<const unsigned char> pubkey, SigVersion sigversion, ScriptExecutionData& execdata, ScriptError* serror = nullptr) const override;
+    bool GetSignatureHashSchnorr(uint256& hash_out, uint16_t include, SigVersion sigversion, ScriptExecutionData& execdata, ScriptError* serror) const override;
     bool CheckLockTime(const CScriptNum& nLockTime) const override;
     bool CheckSequence(const CScriptNum& nSequence) const override;
 };
@@ -328,6 +344,11 @@ public:
     bool CheckSchnorrSignature(std::span<const unsigned char> sig, std::span<const unsigned char> pubkey, SigVersion sigversion, ScriptExecutionData& execdata, ScriptError* serror = nullptr) const override
     {
         return m_checker.CheckSchnorrSignature(sig, pubkey, sigversion, execdata, serror);
+    }
+
+    bool GetSignatureHashSchnorr(uint256& hash_out, uint16_t include, SigVersion sigversion, ScriptExecutionData& execdata, ScriptError* serror) const override
+    {
+        return m_checker.GetSignatureHashSchnorr(hash_out, include, sigversion, execdata, serror);
     }
 
     bool CheckLockTime(const CScriptNum& nLockTime) const override

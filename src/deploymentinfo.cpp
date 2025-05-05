@@ -21,6 +21,10 @@ const std::array<VBDeploymentInfo,Consensus::MAX_VERSION_BITS_DEPLOYMENTS> Versi
         /*.name =*/ "csfs",
         /*.gbt_force =*/ true,
     },
+    {
+        /*.name =*/ "sighash",
+        /*.gbt_force =*/ true,
+    },
 };
 
 std::string DeploymentName(Consensus::BuriedDeployment dep)

@@ -72,6 +72,7 @@ from test_framework.script import (
     OP_NOTIF,
     OP_PUSHDATA1,
     OP_RETURN,
+    OP_SIGHASH,
     OP_SWAP,
     OP_VERIFY,
     SIGHASH_DEFAULT,
@@ -235,7 +236,8 @@ def default_sigmsg(ctx):
             codeseppos = get(ctx, "codeseppos")
             leaf_ver = get(ctx, "leafversion")
             script = get(ctx, "script_taproot")
-            return TaprootSignatureMsg(tx, utxos, hashtype, idx, scriptpath=True, leaf_script=script, leaf_ver=leaf_ver, codeseparator_pos=codeseppos, annex=annex)
+            include = get(ctx, "sigmsg_include")
+            return TaprootSignatureMsg(tx, utxos, hashtype, idx, scriptpath=True, leaf_script=script, leaf_ver=leaf_ver, codeseparator_pos=codeseppos, annex=annex, include=include)
         else:
             return TaprootSignatureMsg(tx, utxos, hashtype, idx, scriptpath=False, annex=annex)
     elif mode == "witv0":
@@ -423,6 +425,8 @@ DEFAULT_CONTEXT = {
     "inputs": [],
     # Use deterministic signing nonces
     "deterministic": False,
+    # The inclusion flags when getting the sigmsg (only when mode=="taproot" and leaf is not None).
+    "sigmsg_include": 0xffff,
 
     # == Parameters to be set before evaluation: ==
     # - mode: what spending style to use ("taproot", "witv0", or "legacy").
@@ -1065,6 +1069,9 @@ def spenders_taproot_active():
     # to pass in case it's the defined pubkey
     CSFS_SIG = sign_schnorr(secs[1], CSFS_MSG)
 
+    # Run SIGHASH on SIGHASH_ALL
+    SIGHASH_FLAGS = b''
+
     # Given a number n, and a public key pk, functions that produce a (CScript, sigops). Each script takes as
     # input a valid signature with the passed pk followed by a dummy push of bytes that are to be dropped, and
     # will execute sigops signature checks.
@@ -1087,7 +1094,12 @@ def spenders_taproot_active():
         lambda n, pk: (CScript([OP_DROP, pk, OP_CHECKSIGVERIFY, CSFS_SIG, CSFS_MSG, pk] + [OP_3DUP, OP_CHECKSIGFROMSTACK, OP_DROP] * n + [OP_2DROP]), n+1),
         # 1 empty CHECKSIG followed by 1 empty OP_CHECKSIGFROMSTACKs, then finally n OP_CHECKSIGFROMSTACKs
         lambda n, pk: (CScript([OP_2DROP, OP_0, pk, OP_CHECKSIG, OP_DROP, OP_0, CSFS_MSG, pk, OP_CHECKSIGFROMSTACK, OP_DROP, CSFS_SIG, CSFS_MSG, pk] + [OP_3DUP, OP_CHECKSIGFROMSTACK, OP_DROP] * n + [OP_2DROP]), n),
-
+        # n OP_SIGHASH and 1 OP_CHECKSIG
+        lambda n, pk: (CScript([OP_DROP, pk] + [SIGHASH_FLAGS, OP_SIGHASH, OP_DROP] * n + [OP_CHECKSIG]), n + 1),
+        # 1 CHECKSIGVERIFY followed by n OP_CHECKSIGFROMSTACKs, all signatures non-empty and validated, followed by n OP_SIGHASH
+        lambda n, pk: (CScript([OP_DROP, pk, OP_CHECKSIGVERIFY, CSFS_SIG, CSFS_MSG, pk] + [OP_3DUP, OP_CHECKSIGFROMSTACK, OP_DROP] * n + [SIGHASH_FLAGS, OP_SIGHASH, OP_DROP] * n + [OP_2DROP]), n+1),
+        # 1 CHECKSIGVERIFY followed by n OP_SIGHASH, followed by n OP_CHECKSIGFROMSTACKs, all signatures non-empty and validated
+        lambda n, pk: (CScript([OP_DROP, pk, OP_CHECKSIGVERIFY, CSFS_SIG, CSFS_MSG, pk] + [SIGHASH_FLAGS, OP_SIGHASH, OP_DROP] * n + [OP_3DUP, OP_CHECKSIGFROMSTACK, OP_DROP] * n + [OP_2DROP]), n+1),
     ]
 
     for annex in [None, bytes([ANNEX_TAG]) + random.randbytes(random.randrange(1000))]:
@@ -1201,7 +1213,7 @@ def spenders_taproot_active():
             ("op_success", CScript([OP_RETURN, CScriptOp(0x50)]))
         ]
         tap = taproot_construct(pubs[0], scripts)
-        add_spender(spenders, "alwaysvalid/notsuccessx", tap=tap, leaf="op_success", inputs=[], standard=False, failure={"leaf": "normal"}) # err_msg differs based on opcode
+        add_spender(spenders, "alwaysvalid/notsuccessx_%d" % opval, tap=tap, leaf="op_success", inputs=[], standard=False, failure={"leaf": "normal"}) # err_msg differs based on opcode
 
     # == Test case for https://github.com/bitcoin/bitcoin/issues/24765 ==
 
@@ -1311,6 +1323,52 @@ def bip348_csfs_spenders():
     # If a known pubkey's signature is not 64 bytes or empty it MUST fail immediately
     add_spender(spenders, comment="bip348_csfs/simple_65_sig", tap=tap, leaf="simple_csfs", key=secs[0], inputs=[getter("sign")], sighash=CSFS_MSG, failure={"leaf": "simple_fail_csfs", "inputs": [zero_appender(getter("sign"))]}, **ERR_SIG_SCHNORR)
     add_spender(spenders, comment="bip348_csfs/simple_63_sig", tap=tap, leaf="simple_csfs", key=secs[0], inputs=[getter("sign")], sighash=CSFS_MSG, failure={"leaf": "simple_fail_csfs", "inputs": [byte_popper(getter("sign"))]}, **ERR_SIG_SCHNORR)
+
+    return spenders
+
+def bipXXX_sighash_spenders():
+    secs = [generate_privkey() for _ in range(2)]
+    pubs = [compute_xonly_pubkey(sec)[0] for sec in secs]
+
+    SIGHASH_ALL_FLAGS = b''
+    SIGHASH_SINGLE_FLAGS = 0xffbf.to_bytes(2, byteorder='little')
+    SIGHASH_NONE_FLAGS = 0xefbf.to_bytes(2, byteorder='little')
+
+    SIGHASH_ALL_ANYONECANPAY_FLAGS = 0xffc3.to_bytes(2, byteorder='little')
+    SIGHASH_SINGLE_ANYONECANPAY_FLAGS = 0xff83.to_bytes(2, byteorder='little')
+    SIGHASH_NONE_ANYONECANPAY_FLAGS = 0xef83.to_bytes(2, byteorder='little')
+
+    # Sigops ratio test is included elsewhere to mix and match with other sigops
+    scripts = [
+        ("op_sighash", CScript([OP_SIGHASH, OP_EQUAL])),
+    ]
+
+    tap = taproot_construct(pubs[0], scripts)
+
+    spenders = []
+
+    add_spender(spenders, comment="op_sighash/all", tap=tap, leaf="op_sighash", hashtype=SIGHASH_ALL, inputs=[getter("sighash"), SIGHASH_ALL_FLAGS], failure={"inputs": []}, **ERR_STACK_EMPTY)
+    add_spender(spenders, comment="op_sighash/none", tap=tap, leaf="op_sighash", key=secs[0], hashtype=SIGHASH_NONE, inputs=[getter("sighash"), SIGHASH_NONE_FLAGS], failure={"inputs": [b'\x00\x00\x00']}, **ERR_STACK_EMPTY)
+    add_spender(spenders, comment="op_sighash/all/anyonecanpay", tap=tap, leaf="op_sighash", hashtype=(SIGHASH_ALL + SIGHASH_ANYONECANPAY), inputs=[getter("sighash"), SIGHASH_ALL_ANYONECANPAY_FLAGS], failure={"inputs": []}, **ERR_STACK_EMPTY)
+    add_spender(spenders, comment="op_sighash/none/anyonecanpay", tap=tap, leaf="op_sighash", key=secs[0], hashtype=(SIGHASH_NONE + SIGHASH_ANYONECANPAY), inputs=[getter("sighash"), SIGHASH_NONE_ANYONECANPAY_FLAGS], failure={"inputs": []}, **ERR_STACK_EMPTY)
+
+    add_spender(spenders, comment="op_sighash/single_mismatch", tap=tap, leaf="op_sighash", hashtype_actual=SIGHASH_ALL, inputs=[getter("sighash"), SIGHASH_ALL_FLAGS], failure={"hashtype_actual": SIGHASH_SINGLE, "inputs": [getter("sighash"), SIGHASH_SINGLE_FLAGS]}, **ERR_SIG_HASHTYPE, need_vin_vout_mismatch=True)
+    add_spender(spenders, comment="op_sighash/single/anyonecanpay_mismatch", tap=tap, leaf="op_sighash", hashtype_actual=SIGHASH_ALL, inputs=[getter("sighash"), SIGHASH_ALL_FLAGS], failure={"hashtype_actual": SIGHASH_SINGLE + SIGHASH_ANYONECANPAY, "inputs": [getter("sighash"), SIGHASH_SINGLE_ANYONECANPAY_FLAGS]}, **ERR_SIG_HASHTYPE, need_vin_vout_mismatch=True)
+
+    for include in random.sample(range(0xffff + 1), 10000):
+        hashtype = None
+        if include & (1 << 6):
+            hashtype = SIGHASH_ALL
+        elif include & (1 << 12):
+            # Skip SINGLE to avoid accidental vin/vout mismatches
+            continue
+        else:
+            hashtype = SIGHASH_NONE
+
+        if not include & 0x3c:
+            hashtype += SIGHASH_ANYONECANPAY
+
+        add_spender(spenders, comment="op_sighash/include_%d" % include, tap=tap, leaf="op_sighash", hashtype=hashtype, sigmsg_include=include, inputs=[getter("sighash"), include.to_bytes(2, byteorder='little')])
 
     return spenders
 
@@ -1880,6 +1938,7 @@ class TaprootTest(BitcoinTestFramework):
         # See sample_spenders for a minimal example
         consensus_spenders = sample_spenders()
         consensus_spenders += bip348_csfs_spenders()
+        consensus_spenders += bipXXX_sighash_spenders()
         consensus_spenders += spenders_taproot_active()
         self.test_spenders(self.nodes[0], consensus_spenders, input_counts=[1, 2, 2, 2, 2, 3])
 

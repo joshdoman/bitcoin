@@ -252,6 +252,9 @@ OP_CHECKSIGADD = CScriptOp(0xba)
 # BIP 348 (OP_SUCCESS204)
 OP_CHECKSIGFROMSTACK = CScriptOp(0xcc)
 
+# BIP XXX (OP_SUCCESS205)
+OP_SIGHASH = CScriptOp(0xcd)
+
 OP_INVALIDOPCODE = CScriptOp(0xff)
 
 OPCODE_NAMES.update({
@@ -369,6 +372,7 @@ OPCODE_NAMES.update({
     OP_CHECKSIGADD: 'OP_CHECKSIGADD',
     OP_INVALIDOPCODE: 'OP_INVALIDOPCODE',
     OP_CHECKSIGFROMSTACK: 'OP_CHECKSIGFROMSTACK',
+    OP_SIGHASH: 'OP_SIGHASH',
 })
 
 class CScriptInvalidError(Exception):
@@ -813,47 +817,63 @@ def BIP341_sha_sequences(txTo):
 def BIP341_sha_outputs(txTo):
     return sha256(b"".join(o.serialize() for o in txTo.vout))
 
-def TaprootSignatureMsg(txTo, spent_utxos, hash_type, input_index=0, *, scriptpath=False, leaf_script=None, codeseparator_pos=-1, annex=None, leaf_ver=LEAF_VERSION_TAPSCRIPT):
+def TaprootSignatureMsg(txTo, spent_utxos, hash_type, input_index=0, *, scriptpath=False, leaf_script=None, codeseparator_pos=-1, annex=None, leaf_ver=LEAF_VERSION_TAPSCRIPT, include=0xffff):
     assert (len(txTo.vin) == len(spent_utxos))
     assert (input_index < len(txTo.vin))
     out_type = SIGHASH_ALL if hash_type == 0 else hash_type & 3
     in_type = hash_type & SIGHASH_ANYONECANPAY
     spk = spent_utxos[input_index].scriptPubKey
     ss = bytes([0, hash_type]) # epoch, hash_type
-    ss += txTo.version.to_bytes(4, "little")
-    ss += txTo.nLockTime.to_bytes(4, "little")
+    if include & (1 << 0):
+        ss += txTo.version.to_bytes(4, "little")
+    if include & (1 << 1):
+        ss += txTo.nLockTime.to_bytes(4, "little")
     if in_type != SIGHASH_ANYONECANPAY:
-        ss += BIP341_sha_prevouts(txTo)
-        ss += BIP341_sha_amounts(spent_utxos)
-        ss += BIP341_sha_scriptpubkeys(spent_utxos)
-        ss += BIP341_sha_sequences(txTo)
+        if include & (1 << 2):
+            ss += BIP341_sha_prevouts(txTo)
+        if include & (1 << 3):
+            ss += BIP341_sha_amounts(spent_utxos)
+        if include & (1 << 4):
+            ss += BIP341_sha_scriptpubkeys(spent_utxos)
+        if include & (1 << 5):
+            ss += BIP341_sha_sequences(txTo)
     if out_type == SIGHASH_ALL:
-        ss += BIP341_sha_outputs(txTo)
+        if include & (1 << 6):
+            ss += BIP341_sha_outputs(txTo)
     spend_type = 0
     if annex is not None:
         spend_type |= 1
     if scriptpath:
         spend_type |= 2
-    ss += bytes([spend_type])
+    if include & (1 << 7):
+        ss += bytes([spend_type])
     if in_type == SIGHASH_ANYONECANPAY:
-        ss += txTo.vin[input_index].prevout.serialize()
-        ss += spent_utxos[input_index].nValue.to_bytes(8, "little", signed=True)
-        ss += ser_string(spk)
-        ss += txTo.vin[input_index].nSequence.to_bytes(4, "little")
+        if include & (1 << 8):
+            ss += txTo.vin[input_index].prevout.serialize()
+        if include & (1 << 9):
+            ss += spent_utxos[input_index].nValue.to_bytes(8, "little", signed=True)
+            ss += ser_string(spk)
+        if include & (1 << 10):
+            ss += txTo.vin[input_index].nSequence.to_bytes(4, "little")
     else:
-        ss += input_index.to_bytes(4, "little")
-    if (spend_type & 1):
+        if include & (1 << 8):
+            ss += input_index.to_bytes(4, "little")
+    if (spend_type & 1) and include & (1 << 11):
         ss += sha256(ser_string(annex))
     if out_type == SIGHASH_SINGLE:
-        if input_index < len(txTo.vout):
+        if input_index < len(txTo.vout) and include & (1 << 12):
             ss += sha256(txTo.vout[input_index].serialize())
-        else:
+        elif include & (1 << 12):
             ss += bytes(0 for _ in range(32))
     if scriptpath:
-        ss += TaggedHash("TapLeaf", bytes([leaf_ver]) + ser_string(leaf_script))
-        ss += bytes([0])
-        ss += codeseparator_pos.to_bytes(4, "little", signed=False)
-    assert len(ss) == 175 - (in_type == SIGHASH_ANYONECANPAY) * 49 - (out_type != SIGHASH_ALL and out_type != SIGHASH_SINGLE) * 32 + (annex is not None) * 32 + scriptpath * 37
+        if include & (1 << 13):
+            ss += TaggedHash("TapLeaf", bytes([leaf_ver]) + ser_string(leaf_script))
+        if include & (1 << 14):
+            ss += bytes([0])
+        if include & (1 << 15):
+            ss += codeseparator_pos.to_bytes(4, "little", signed=False)
+    if include == 0xffff:
+        assert len(ss) == 175 - (in_type == SIGHASH_ANYONECANPAY) * 49 - (out_type != SIGHASH_ALL and out_type != SIGHASH_SINGLE) * 32 + (annex is not None) * 32 + scriptpath * 37
     return ss
 
 def TaprootSignatureHash(*args, **kwargs):
@@ -943,6 +963,7 @@ def taproot_construct(pubkey, scripts=None, treat_internal_as_infinity=False):
 # OP_SUCCESS opcodes which have been restricted by softforks.
 OP_SUCCESS_OVERRIDES = frozenset({
     OP_CHECKSIGFROMSTACK,
+    OP_SIGHASH,
 })
 
 def is_op_success(o):
