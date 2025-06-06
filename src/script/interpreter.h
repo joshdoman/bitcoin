@@ -217,8 +217,8 @@ struct ScriptExecutionData
     bool m_annex_present;
     //! Hash of the annex data.
     uint256 m_annex_hash;
-    //! Whether the annex has been signed.
-    bool m_annex_signed = false;
+    //! Whether an unsigned annex is present.
+    bool m_annex_unsigned = false;
 
     //! Whether m_validation_weight_left is initialized.
     bool m_validation_weight_left_init = false;
