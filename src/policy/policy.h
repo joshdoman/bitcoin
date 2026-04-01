@@ -108,7 +108,8 @@ static constexpr script_verify_flags MANDATORY_SCRIPT_VERIFY_FLAGS{SCRIPT_VERIFY
                                                              SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY |
                                                              SCRIPT_VERIFY_CHECKSEQUENCEVERIFY |
                                                              SCRIPT_VERIFY_WITNESS |
-                                                             SCRIPT_VERIFY_TAPROOT};
+                                                             SCRIPT_VERIFY_TAPROOT |
+                                                             SCRIPT_VERIFY_SINGLETON};
 
 /**
  * Standard script verification flags that standard transactions will comply
@@ -128,6 +129,7 @@ static constexpr script_verify_flags STANDARD_SCRIPT_VERIFY_FLAGS{MANDATORY_SCRI
                                                              SCRIPT_VERIFY_WITNESS_PUBKEYTYPE |
                                                              SCRIPT_VERIFY_CONST_SCRIPTCODE |
                                                              SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_TAPROOT_VERSION |
+                                                             SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_SINGLETON_VERSION |
                                                              SCRIPT_VERIFY_DISCOURAGE_OP_SUCCESS |
                                                              SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_PUBKEYTYPE};
 

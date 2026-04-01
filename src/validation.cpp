@@ -2124,6 +2124,19 @@ bool CheckInputScripts(const CTransaction& tx, TxValidationState& state,
         }
     }
 
+    for (unsigned int i = 0; i < tx.vout.size(); i++) {
+
+        // Verify output scriptPubKey
+        ScriptError error{SCRIPT_ERR_UNKNOWN_ERROR};
+        if (!VerifyOutputScript(tx.vout[i].scriptPubKey, tx, i, txdata, flags, &error)) {
+            if (flags & STANDARD_NOT_MANDATORY_VERIFY_FLAGS) {
+                return state.Invalid(TxValidationResult::TX_NOT_STANDARD, strprintf("mempool-script-verify-flag-failed (%s)", ScriptErrorString(error)), strprintf("output %i of %s (wtxid %s)", i, tx.GetHash().ToString(), tx.GetWitnessHash().ToString()));
+            } else {
+                return state.Invalid(TxValidationResult::TX_CONSENSUS, strprintf("block-script-verify-flag-failed (%s)", ScriptErrorString(error)), strprintf("output %i of %s (wtxid %s)", i, tx.GetHash().ToString(), tx.GetWitnessHash().ToString()));
+            }
+        }
+    }
+
     if (cacheFullScriptStore && !pvChecks) {
         // We executed all of the provided scripts, and were told to
         // cache the result. Do so now.

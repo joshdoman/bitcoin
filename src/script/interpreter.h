@@ -135,9 +135,17 @@ enum class script_verify_flag_name : uint8_t {
     //
     SCRIPT_VERIFY_TAPROOT,
 
+    // Singleton validation (BIP XXX)
+    //
+    SCRIPT_VERIFY_SINGLETON,
+
     // Making unknown Taproot leaf versions non-standard
     //
     SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_TAPROOT_VERSION,
+
+    // Making unknown Singleton leaf versions non-standard
+    //
+    SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_SINGLETON_VERSION,
 
     // Making unknown OP_SUCCESS non-standard
     SCRIPT_VERIFY_DISCOURAGE_OP_SUCCESS,
@@ -237,6 +245,7 @@ struct ScriptExecutionData
 static constexpr size_t WITNESS_V0_SCRIPTHASH_SIZE = 32;
 static constexpr size_t WITNESS_V0_KEYHASH_SIZE = 20;
 static constexpr size_t WITNESS_V1_TAPROOT_SIZE = 32;
+static constexpr size_t WITNESS_V3_SINGLETON_SIZE = 32;
 
 static constexpr uint8_t TAPROOT_LEAF_MASK = 0xfe;
 static constexpr uint8_t TAPROOT_LEAF_TAPSCRIPT = 0xc0;
@@ -245,9 +254,19 @@ static constexpr size_t TAPROOT_CONTROL_NODE_SIZE = 32;
 static constexpr size_t TAPROOT_CONTROL_MAX_NODE_COUNT = 128;
 static constexpr size_t TAPROOT_CONTROL_MAX_SIZE = TAPROOT_CONTROL_BASE_SIZE + TAPROOT_CONTROL_NODE_SIZE * TAPROOT_CONTROL_MAX_NODE_COUNT;
 
+static constexpr uint8_t SINGLETON_LEAF_MASK = TAPROOT_LEAF_MASK;
+static constexpr uint8_t SINGLETON_LEAF_TAPSCRIPT = TAPROOT_LEAF_TAPSCRIPT;
+static constexpr size_t SINGLETON_CONTROL_BASE_SIZE = TAPROOT_CONTROL_BASE_SIZE;
+static constexpr size_t SINGLETON_CONTROL_NODE_SIZE = TAPROOT_CONTROL_NODE_SIZE;
+static constexpr size_t SINGLETON_CONTROL_MAX_NODE_COUNT = TAPROOT_CONTROL_MAX_NODE_COUNT;
+static constexpr size_t SINGLETON_CONTROL_MAX_SIZE = SINGLETON_CONTROL_BASE_SIZE + SINGLETON_CONTROL_NODE_SIZE * SINGLETON_CONTROL_MAX_NODE_COUNT;
+static constexpr size_t SINGLETON_GENESIS_OP_RETURN_SIZE = 2 + SINGLETON_CONTROL_NODE_SIZE;
+
 extern const HashWriter HASHER_TAPSIGHASH; //!< Hasher with tag "TapSighash" pre-fed to it.
 extern const HashWriter HASHER_TAPLEAF;    //!< Hasher with tag "TapLeaf" pre-fed to it.
 extern const HashWriter HASHER_TAPBRANCH;  //!< Hasher with tag "TapBranch" pre-fed to it.
+extern const HashWriter HASHER_SINGLETONHASH;    //!< Hasher with tag "SingletonHash" pre-fed to it.
+extern const HashWriter HASHER_SINGLETONIDENTIFIER;  //!< Hasher with tag "SingletonIdentifier" pre-fed to it.
 
 /** Data structure to cache SHA256 midstates for the ECDSA sighash calculations
  *  (bare, P2SH, P2WPKH, P2WSH). */
@@ -294,6 +313,11 @@ public:
          return false;
     }
 
+    virtual bool CheckSingletonContinuation(const std::span<const unsigned char>& hash) const
+    {
+        return false;
+    }
+
     virtual ~BaseSignatureChecker() = default;
 };
 
@@ -331,6 +355,7 @@ public:
     bool CheckSchnorrSignature(std::span<const unsigned char> sig, std::span<const unsigned char> pubkey, SigVersion sigversion, ScriptExecutionData& execdata, ScriptError* serror = nullptr) const override;
     bool CheckLockTime(const CScriptNum& nLockTime) const override;
     bool CheckSequence(const CScriptNum& nSequence) const override;
+    bool CheckSingletonContinuation(const std::span<const unsigned char>& hash) const override;
 };
 
 using TransactionSignatureChecker = GenericTransactionSignatureChecker<CTransaction>;
@@ -362,6 +387,10 @@ public:
     {
         return m_checker.CheckSequence(nSequence);
     }
+    bool CheckSingletonContinuation(const std::span<const unsigned char>& hash) const override
+    {
+        return m_checker.CheckSingletonContinuation(hash);
+    }
 };
 
 /** Compute the BIP341 tapleaf hash from leaf version & script. */
@@ -376,6 +405,8 @@ uint256 ComputeTaprootMerkleRoot(std::span<const unsigned char> control, const u
 bool EvalScript(std::vector<std::vector<unsigned char> >& stack, const CScript& script, script_verify_flags flags, const BaseSignatureChecker& checker, SigVersion sigversion, ScriptExecutionData& execdata, ScriptError* error = nullptr);
 bool EvalScript(std::vector<std::vector<unsigned char> >& stack, const CScript& script, script_verify_flags flags, const BaseSignatureChecker& checker, SigVersion sigversion, ScriptError* error = nullptr);
 bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const CScriptWitness* witness, script_verify_flags flags, const BaseSignatureChecker& checker, ScriptError* serror = nullptr);
+
+bool VerifyOutputScript(const CScript& scriptPubKey, const CTransaction& tx, unsigned int nOut, const PrecomputedTransactionData& txdata, script_verify_flags flags, ScriptError* serror = nullptr);
 
 size_t CountWitnessSigOps(const CScript& scriptSig, const CScript& scriptPubKey, const CScriptWitness& witness, script_verify_flags flags);
 

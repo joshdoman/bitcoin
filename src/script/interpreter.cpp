@@ -1415,12 +1415,12 @@ void PrecomputedTransactionData::Init(const T& txTo, std::vector<CTxOut>&& spent
     bool uses_bip341_taproot = force;
     for (size_t inpos = 0; inpos < txTo.vin.size() && !(uses_bip143_segwit && uses_bip341_taproot); ++inpos) {
         if (!txTo.vin[inpos].scriptWitness.IsNull()) {
-            if (m_spent_outputs_ready && m_spent_outputs[inpos].scriptPubKey.size() == 2 + WITNESS_V1_TAPROOT_SIZE &&
-                m_spent_outputs[inpos].scriptPubKey[0] == OP_1) {
+            if (m_spent_outputs_ready && (m_spent_outputs[inpos].scriptPubKey.IsPayToTaproot() || m_spent_outputs[inpos].scriptPubKey.IsPayToSingleton())) {
                 // Treat every witness-bearing spend with 34-byte scriptPubKey that starts with OP_1 as a Taproot
-                // spend. This only works if spent_outputs was provided as well, but if it wasn't, actual validation
-                // will fail anyway. Note that this branch may trigger for scriptPubKeys that aren't actually segwit
-                // but in that case validation will fail as SCRIPT_ERR_WITNESS_UNEXPECTED anyway.
+                // spend and OP_3 as a Singleton spend. This only works if spent_outputs was provided as well, but if
+                // it wasn't, actual validation will fail anyway. Note that this branch may trigger for scriptPubKeys
+                // that aren't actually segwit but in that case validation will fail as SCRIPT_ERR_WITNESS_UNEXPECTED
+                // anyway. Note also that Singleton spends use the exact same precomputation features as Taproot.
                 uses_bip341_taproot = true;
             } else {
                 // Treat every spend that's not known to native witness v1 as a Witness v0 spend. This branch may
@@ -1466,6 +1466,8 @@ template PrecomputedTransactionData::PrecomputedTransactionData(const CMutableTr
 const HashWriter HASHER_TAPSIGHASH{TaggedHash("TapSighash")};
 const HashWriter HASHER_TAPLEAF{TaggedHash("TapLeaf")};
 const HashWriter HASHER_TAPBRANCH{TaggedHash("TapBranch")};
+const HashWriter HASHER_SINGLETONHASH{TaggedHash("SingletonHash")};
+const HashWriter HASHER_SINGLETONIDENTIFIER{TaggedHash("SingletonIdentifier")};
 
 static bool HandleMissingData(MissingDataBehavior mdb)
 {
@@ -1825,6 +1827,21 @@ bool GenericTransactionSignatureChecker<T>::CheckSequence(const CScriptNum& nSeq
     return true;
 }
 
+template <class T>
+bool GenericTransactionSignatureChecker<T>::CheckSingletonContinuation(const std::span<const unsigned char>& hash) const
+{
+    assert(hash.size() == WITNESS_V3_SINGLETON_SIZE);
+
+    if (nIn < txTo->vout.size()) {
+        const auto& scriptPubKey = txTo->vout[nIn].scriptPubKey;
+        if (scriptPubKey.IsPayToSingleton()) {
+            return std::equal(scriptPubKey.begin() + 2, scriptPubKey.end(), hash.begin(), hash.end());
+        }
+    }
+
+    return false;
+}
+
 // explicit instantiation
 template class GenericTransactionSignatureChecker<CTransaction>;
 template class GenericTransactionSignatureChecker<CMutableTransaction>;
@@ -1914,6 +1931,45 @@ static bool VerifyTaprootCommitment(const std::vector<unsigned char>& control, c
     return q.CheckTapTweak(p, merkle_root, control[0] & 1);
 }
 
+uint256 ComputeSingletonIdentifier(const COutPoint& prevout, unsigned int nOut, CAmount init_value, const uint256& script_tree_merkle_root)
+{
+    return (HashWriter{HASHER_SINGLETONIDENTIFIER} << prevout << nOut << init_value << script_tree_merkle_root).GetSHA256();
+}
+
+uint256 ComputeSingletonHash(const uint256& identifier, const uint256& script_tree_merkle_root)
+{
+    return (HashWriter{HASHER_SINGLETONHASH} << identifier << script_tree_merkle_root).GetSHA256();
+}
+
+static bool VerifySingletonCommitment(const std::vector<unsigned char>& control, const std::vector<unsigned char>& program, const uint256& identifier, const uint256& tapleaf_hash)
+{
+    assert(control.size() >= SINGLETON_CONTROL_BASE_SIZE);
+    assert(program.size() >= uint256::size());
+    //! The program hash (taken from the scriptPubKey).
+    const uint256 p{program};
+    //! Compute the Merkle root from the leaf and the provided path.
+    const uint256 merkle_root = ComputeTaprootMerkleRoot(control, tapleaf_hash);
+    //! Verify that the output hash matches the expected hash.
+    return p == ComputeSingletonHash(identifier, merkle_root);
+}
+
+static bool VerifySingletonGenesis(const CScript& scriptPubKey, const CScript& nextScriptPubKey, const COutPoint& prevout, unsigned int nOut, CAmount nValue)
+{
+    assert(scriptPubKey.IsPayToSingleton());
+    //! Verify that next scriptPubKey is a genesis OP_RETURN.
+    if (nextScriptPubKey.size() != SINGLETON_GENESIS_OP_RETURN_SIZE || nextScriptPubKey[0] != OP_RETURN || nextScriptPubKey[1] != 0x20) return false;
+    //! The program hash
+    uint256 p(std::span<const unsigned char>(scriptPubKey.data() + 2, 32));
+    //! The script tree Merkle root.
+    const uint256 script_tree_merkle_root{std::span{nextScriptPubKey}.subspan(2, SINGLETON_CONTROL_NODE_SIZE)};
+    //! Compute the expected identifier.
+    const uint256 identifier = ComputeSingletonIdentifier(prevout, nOut, nValue, script_tree_merkle_root);
+    //! Compute the expected output hash.
+    const uint256 singleton_hash = ComputeSingletonHash(identifier, script_tree_merkle_root);
+    //! Verify that the output pubkey matches the expected hash.
+    return p == singleton_hash;
+}
+
 static bool VerifyWitnessProgram(const CScriptWitness& witness, int witversion, const std::vector<unsigned char>& program, script_verify_flags flags, const BaseSignatureChecker& checker, ScriptError* serror, bool is_p2sh)
 {
     CScript exec_script; //!< Actually executed script (last stack item in P2WSH; implied P2PKH script in P2WPKH; leaf script in P2TR)
@@ -1987,6 +2043,51 @@ static bool VerifyWitnessProgram(const CScriptWitness& witness, int witversion, 
             }
             return set_success(serror);
         }
+    } else if (witversion == 3 && program.size() == WITNESS_V3_SINGLETON_SIZE && !is_p2sh) {
+        // BIP??? Singleton: 32-byte non-P2SH witness v3 program
+        if (!(flags & SCRIPT_VERIFY_SINGLETON)) return set_success(serror);
+        if (stack.size() == 0) return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_WITNESS_EMPTY);
+        if (!stack.back().empty() && stack.back()[0] == ANNEX_TAG) {
+            // Drop annex (this is non-standard except for authorizing a v3 output; see IsWitnessStandard)
+            const valtype& annex = SpanPopBack(stack);
+            execdata.m_annex_hash = (HashWriter{} << annex).GetSHA256();
+            execdata.m_annex_present = true;
+        } else {
+            execdata.m_annex_present = false;
+        }
+        execdata.m_annex_init = true;
+        if (stack.size() < 2) return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_MISMATCH); // Need at least 2 items in witness after removing optional annex
+        const valtype& control = SpanPopBack(stack);
+        const valtype& script = SpanPopBack(stack);
+        if (control.size() < SINGLETON_CONTROL_BASE_SIZE || control.size() > SINGLETON_CONTROL_MAX_SIZE || ((control.size() - SINGLETON_CONTROL_BASE_SIZE) % SINGLETON_CONTROL_NODE_SIZE) != 0) {
+            return set_error(serror, SCRIPT_ERR_SINGLETON_WRONG_CONTROL_SIZE);
+        }
+        execdata.m_tapleaf_hash = ComputeTapleafHash(control[0] & SINGLETON_LEAF_MASK, script);
+        execdata.m_tapleaf_hash_init = true;
+        const uint256 identifier{std::span{control}.subspan(1, SINGLETON_CONTROL_BASE_SIZE - 1)};
+        if (!VerifySingletonCommitment(control, program, identifier, execdata.m_tapleaf_hash)) {
+            return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_MISMATCH);
+        }
+        if ((control[0] & 1)) {
+            // Continuation
+            if (stack.size() < 1) return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_MISMATCH); // Need at least 1 item in witness after removing control and script
+            const valtype& next_script_tree_merkle_root = SpanPopBack(stack);
+            if (next_script_tree_merkle_root.size() != SINGLETON_CONTROL_NODE_SIZE ||
+                !checker.CheckSingletonContinuation(ComputeSingletonHash(identifier, uint256{next_script_tree_merkle_root}))) {
+                return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_MISMATCH);
+            }
+        }
+        if ((control[0] & SINGLETON_LEAF_MASK) == SINGLETON_LEAF_TAPSCRIPT) {
+            // Tapscript (leaf version 0xc0)
+            exec_script = CScript(script.begin(), script.end());
+            execdata.m_validation_weight_left = ::GetSerializeSize(witness.stack) + VALIDATION_WEIGHT_OFFSET;
+            execdata.m_validation_weight_left_init = true;
+            return ExecuteWitnessScript(stack, exec_script, flags, SigVersion::TAPSCRIPT, checker, execdata, serror);
+        }
+        if (flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_SINGLETON_VERSION) {
+            return set_error(serror, SCRIPT_ERR_DISCOURAGE_UPGRADABLE_SINGLETON_VERSION);
+        }
+        return set_success(serror);
     } else if (!is_p2sh && CScript::IsPayToAnchor(witversion, program)) {
         return true;
     } else {
@@ -1997,6 +2098,35 @@ static bool VerifyWitnessProgram(const CScriptWitness& witness, int witversion, 
         return true;
     }
     // There is intentionally no return statement here, to be able to use "control reaches end of non-void function" warnings to detect gaps in the logic above.
+}
+
+bool VerifyOutputScript(const CScript& scriptPubKey, const CTransaction& tx, unsigned int nOut, const PrecomputedTransactionData& txdata, script_verify_flags flags, ScriptError* serror) {
+    if (scriptPubKey.IsPayToSingleton()) {
+        // BIP??? Singleton: 32-byte witness v3 program
+        if (!(flags & SCRIPT_VERIFY_SINGLETON)) return set_success(serror);
+        // Check for continuation (v3 output created by spending v3 input at same index)
+        assert(txdata.m_spent_outputs_ready);
+        if (nOut < tx.vin.size() && txdata.m_spent_outputs[nOut].scriptPubKey.IsPayToSingleton() && tx.vin[nOut].scriptWitness.stack.size() >= 2) {
+            std::span stack{tx.vin[nOut].scriptWitness.stack};
+            if (!stack.back().empty() && stack.back()[0] == ANNEX_TAG) SpanPopBack(stack); // Drop annex
+            const valtype& control = stack.back();
+            if (!control.empty() && (control[0] & 1)) return set_success(serror); // Check continuation bit
+        }
+        // Transaction may not be a coinbase and output may not be last
+        if (!tx.IsCoinBase() || nOut >= tx.vout.size() - 1) {
+            return set_error(serror, SCRIPT_ERR_SINGLETON_UNAUTHORIZED_OUTPUT);
+        }
+        // Verify output is a valid genesis
+        assert(!tx.vin.empty());
+        if (VerifySingletonGenesis(scriptPubKey, tx.vout[nOut + 1].scriptPubKey, tx.vin[0].prevout, nOut, tx.vout[nOut].nValue)) {
+            return set_success(serror);
+        }
+        // Neither a valid genesis nor continuation
+        return set_error(serror, SCRIPT_ERR_SINGLETON_UNAUTHORIZED_OUTPUT);
+    }
+
+    // Other outputs automatically succeed for backward and future softfork compatibilty
+    return true;
 }
 
 bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const CScriptWitness* witness, script_verify_flags flags, const BaseSignatureChecker& checker, ScriptError* serror)
@@ -2187,9 +2317,11 @@ const std::map<std::string, script_verify_flag_name>& ScriptFlagNamesToEnum()
         FLAG_NAME(WITNESS_PUBKEYTYPE),
         FLAG_NAME(CONST_SCRIPTCODE),
         FLAG_NAME(TAPROOT),
+        FLAG_NAME(SINGLETON),
         FLAG_NAME(DISCOURAGE_UPGRADABLE_PUBKEYTYPE),
         FLAG_NAME(DISCOURAGE_OP_SUCCESS),
         FLAG_NAME(DISCOURAGE_UPGRADABLE_TAPROOT_VERSION),
+        FLAG_NAME(DISCOURAGE_UPGRADABLE_SINGLETON_VERSION),
     };
 #undef FLAG_NAME
     return g_names_to_enum;

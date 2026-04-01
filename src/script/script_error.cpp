@@ -75,6 +75,8 @@ std::string ScriptErrorString(const ScriptError serror)
             return "Witness version reserved for soft-fork upgrades";
         case SCRIPT_ERR_DISCOURAGE_UPGRADABLE_TAPROOT_VERSION:
             return "Taproot version reserved for soft-fork upgrades";
+        case SCRIPT_ERR_DISCOURAGE_UPGRADABLE_SINGLETON_VERSION:
+            return "Singleton version reserved for soft-fork upgrades";
         case SCRIPT_ERR_DISCOURAGE_OP_SUCCESS:
             return "OP_SUCCESSx reserved for soft-fork upgrades";
         case SCRIPT_ERR_DISCOURAGE_UPGRADABLE_PUBKEYTYPE:
@@ -105,6 +107,10 @@ std::string ScriptErrorString(const ScriptError serror)
             return "Invalid Schnorr signature";
         case SCRIPT_ERR_TAPROOT_WRONG_CONTROL_SIZE:
             return "Invalid Taproot control block size";
+        case SCRIPT_ERR_SINGLETON_WRONG_CONTROL_SIZE:
+            return "Invalid Singleton control block size";
+        case SCRIPT_ERR_SINGLETON_UNAUTHORIZED_OUTPUT:
+            return "Invalid Singleton output";
         case SCRIPT_ERR_TAPSCRIPT_VALIDATION_WEIGHT:
             return "Too much signature validation relative to witness weight";
         case SCRIPT_ERR_TAPSCRIPT_CHECKMULTISIG:
