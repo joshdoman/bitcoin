@@ -1192,8 +1192,8 @@ BOOST_AUTO_TEST_CASE(spends_witness_prog)
     std::vector<std::vector<uint8_t>> sol_dummy;
 
     // CNoDestination, PubKeyDestination, PKHash, ScriptHash, WitnessV0ScriptHash, WitnessV0KeyHash,
-    // WitnessV1Taproot, PayToAnchor, WitnessUnknown.
-    static_assert(std::variant_size_v<CTxDestination> == 9);
+    // WitnessV1Taproot, WitnessV3Singleton, PayToAnchor, WitnessUnknown.
+    static_assert(std::variant_size_v<CTxDestination> == 10);
 
     // Go through all defined output types and sanity check SpendsNonAnchorWitnessProg.
 
@@ -1311,9 +1311,10 @@ BOOST_AUTO_TEST_CASE(spends_witness_prog)
     tx_spend.vin[0].scriptSig.clear();
     BOOST_CHECK(!::SpendsNonAnchorWitnessProg(CTransaction{tx_spend}, coins));
 
-    // Various undefined version >1 32-byte witness programs.
+    // Various undefined version 2 and >3 32-byte witness programs.
     const auto program{ToByteVector(XOnlyPubKey{pubkey})};
     for (int i{2}; i <= 16; ++i) {
+        if (i == 3) continue;
         tx_create.vout[0].scriptPubKey = GetScriptForDestination(WitnessUnknown{i, program});
         BOOST_CHECK_EQUAL(Solver(tx_create.vout[0].scriptPubKey, sol_dummy), TxoutType::WITNESS_UNKNOWN);
         tx_spend.vin[0].prevout.hash = tx_create.GetHash();

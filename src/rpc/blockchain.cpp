@@ -1503,6 +1503,9 @@ UniValue DeploymentInfo(const CBlockIndex* blockindex, const ChainstateManager& 
     SoftForkDescPushBack(blockindex, softforks, chainman, Consensus::DEPLOYMENT_CSV);
     SoftForkDescPushBack(blockindex, softforks, chainman, Consensus::DEPLOYMENT_SEGWIT);
     SoftForkDescPushBack(blockindex, softforks, chainman, Consensus::DEPLOYMENT_TESTDUMMY);
+    if (chainman.GetParams().GetChainType() == ChainType::REGTEST) {
+        SoftForkDescPushBack(blockindex, softforks, chainman, Consensus::DEPLOYMENT_SINGLETON);
+    }
     return softforks;
 }
 } // anon namespace

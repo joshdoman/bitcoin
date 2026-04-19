@@ -848,6 +848,9 @@ def spenders_taproot_active():
     for p2sh in [False, True]:
         for witver in range(1, 17):
             for witlen in [20, 31, 32, 33]:
+                if witver == 3 and witlen == 32:
+                    # Skip witness version 3, program length 32 (pay-to-singleton)
+                    continue
                 def mutate(spk):
                     prog = spk[2:]
                     assert len(prog) == 32

@@ -1233,6 +1233,13 @@ BOOST_AUTO_TEST_CASE(script_size_and_capacity_test)
         CHECK_SCRIPT_STATIC_SIZE(script, 34);
     }
 
+    // P2SG has direct allocation
+    {
+        const auto script{GetScriptForDestination(WitnessV3Singleton{uint256::ZERO})};
+        BOOST_CHECK_EQUAL(GetTxoutType(script), TxoutType::WITNESS_V3_SINGLETON);
+        CHECK_SCRIPT_STATIC_SIZE(script, 34);
+    }
+
     // Compressed P2PK has direct allocation
     {
         const auto script{GetScriptForRawPubKey(dummy_pubkey)};

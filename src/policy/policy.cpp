@@ -318,11 +318,14 @@ bool IsWitnessStandard(const CTransaction& tx, const CCoinsViewCache& mapInputs)
             }
         }
 
-        // Check policy limits for Taproot spends:
+        // Check policy limits for Taproot and Singleton spends:
         // - MAX_STANDARD_TAPSCRIPT_STACK_ITEM_SIZE limit for stack item size
         // - No annexes
-        if (witnessversion == 1 && witnessprogram.size() == WITNESS_V1_TAPROOT_SIZE && !p2sh) {
+        bool is_taproot = witnessversion == 1 && witnessprogram.size() == WITNESS_V1_TAPROOT_SIZE && !p2sh;
+        bool is_singleton = witnessversion == 3 && witnessprogram.size() == WITNESS_V3_SINGLETON_SIZE && !p2sh;
+        if (is_taproot || is_singleton) {
             // Taproot spend (non-P2SH-wrapped, version 1, witness program size 32; see BIP 341)
+            // OR Singleton spend (non-P2SH-wrapped, version 3, witness program size 32; see BIP XXX)
             std::span stack{tx.vin[i].scriptWitness.stack};
             if (stack.size() >= 2 && !stack.back().empty() && stack.back()[0] == ANNEX_TAG) {
                 // Annexes are nonstandard as long as no semantics are defined for them.
@@ -333,17 +336,18 @@ bool IsWitnessStandard(const CTransaction& tx, const CCoinsViewCache& mapInputs)
                 const auto& control_block = SpanPopBack(stack);
                 SpanPopBack(stack); // Ignore script
                 if (control_block.empty()) return false; // Empty control block is invalid
+                if (is_singleton && (control_block[0] & 1)) SpanPopBack(stack); // Ignore next script tree Merkle root
                 if ((control_block[0] & TAPROOT_LEAF_MASK) == TAPROOT_LEAF_TAPSCRIPT) {
                     // Leaf version 0xc0 (aka Tapscript, see BIP 342)
                     for (const auto& item : stack) {
                         if (item.size() > MAX_STANDARD_TAPSCRIPT_STACK_ITEM_SIZE) return false;
                     }
                 }
-            } else if (stack.size() == 1) {
+            } else if (stack.size() == 1 && is_taproot) {
                 // Key path spend (1 stack element after removing optional annex)
                 // (no policy rules apply)
             } else {
-                // 0 stack elements; this is already invalid by consensus rules
+                // 0 stack elements or 1 element Singleton spend; this is already invalid by consensus rules
                 return false;
             }
         }

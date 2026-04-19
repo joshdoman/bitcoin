@@ -54,6 +54,7 @@ from test_framework.script import (
     OP_0,
     OP_1,
     OP_2,
+    OP_3,
     OP_16,
     OP_2DROP,
     OP_CHECKMULTISIG,
@@ -1345,8 +1346,8 @@ class SegWitTest(BitcoinTestFramework):
         assert_equal(len(self.nodes[1].getrawmempool()), 0)
         for version in list(range(OP_1, OP_16 + 1)) + [OP_0]:
             # First try to spend to a future version segwit script_pubkey.
-            if version == OP_1:
-                # Don't use 32-byte v1 witness (used by Taproot; see BIP 341)
+            if version == OP_1 or version == OP_3:
+                # Don't use 32-byte v1 or v3 witness (used by Taproot and Singleton; see BIP 341, BIP ???)
                 script_pubkey = CScript([CScriptOp(version), witness_hash + b'\x00'])
             else:
                 script_pubkey = CScript([CScriptOp(version), witness_hash])

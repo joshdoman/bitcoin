@@ -123,6 +123,13 @@ BOOST_AUTO_TEST_CASE(script_standard_Solver_success)
     BOOST_CHECK_EQUAL(solutions.size(), 1U);
     BOOST_CHECK(solutions[0] == ToByteVector(uint256::ZERO));
 
+    // TxoutType::WITNESS_V3_SINGLETON
+    s.clear();
+    s << OP_3 << ToByteVector(uint256::ZERO);
+    BOOST_CHECK_EQUAL(Solver(s, solutions), TxoutType::WITNESS_V3_SINGLETON);
+    BOOST_CHECK_EQUAL(solutions.size(), 1U);
+    BOOST_CHECK(solutions[0] == ToByteVector(uint256::ZERO));
+
     // TxoutType::WITNESS_UNKNOWN
     s.clear();
     s << OP_16 << ToByteVector(uint256::ONE);
@@ -211,6 +218,14 @@ BOOST_AUTO_TEST_CASE(script_standard_Solver_failure)
     s << OP_1 << std::vector<unsigned char>(33, 0x01);
     BOOST_CHECK_EQUAL(Solver(s, solutions), TxoutType::WITNESS_UNKNOWN);
 
+    // TxoutType::WITNESS_V3_SINGLETON with incorrect program size (-> undefined, but still policy-valid)
+    s.clear();
+    s << OP_3 << std::vector<unsigned char>(31, 0x01);
+    BOOST_CHECK_EQUAL(Solver(s, solutions), TxoutType::WITNESS_UNKNOWN);
+    s.clear();
+    s << OP_3 << std::vector<unsigned char>(33, 0x01);
+    BOOST_CHECK_EQUAL(Solver(s, solutions), TxoutType::WITNESS_UNKNOWN);
+
     // TxoutType::ANCHOR but wrong witness version
     s.clear();
     s << OP_2 << ANCHOR_BYTES;
@@ -283,6 +298,12 @@ BOOST_AUTO_TEST_CASE(script_standard_ExtractDestination)
     s << OP_1 << ToByteVector(xpk);
     BOOST_CHECK(ExtractDestination(s, address));
     BOOST_CHECK(std::get<WitnessV1Taproot>(address) == WitnessV1Taproot(xpk));
+
+    // TxoutType::WITNESS_V3_SINGLETON
+    s.clear();
+    s << OP_3 << ToByteVector(uint256::ZERO);
+    BOOST_CHECK(ExtractDestination(s, address));
+    BOOST_CHECK(std::get<WitnessV3Singleton>(address) == WitnessV3Singleton(uint256::ZERO));
 
     // TxoutType::ANCHOR
     s.clear();
@@ -376,6 +397,13 @@ BOOST_AUTO_TEST_CASE(script_standard_GetScriptFor_)
     expected.clear();
     expected << OP_1 << ToByteVector(xpk);
     result = GetScriptForDestination(WitnessV1Taproot(xpk));
+    BOOST_CHECK(result == expected);
+
+    // WitnessV3Singleton
+    auto hash = uint256::ZERO;
+    expected.clear();
+    expected << OP_3 << ToByteVector(hash);
+    result = GetScriptForDestination(WitnessV3Singleton(hash));
     BOOST_CHECK(result == expected);
 
     // PayToAnchor

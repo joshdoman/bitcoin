@@ -326,6 +326,16 @@ public:
         return obj;
     }
 
+    UniValue operator()(const WitnessV3Singleton& hash) const
+    {
+        UniValue obj(UniValue::VOBJ);
+        obj.pushKV("isscript", true);
+        obj.pushKV("iswitness", true);
+        obj.pushKV("witness_version", 3);
+        obj.pushKV("witness_program", HexStr(hash));
+        return obj;
+    }
+
     UniValue operator()(const PayToAnchor& anchor) const
     {
         UniValue obj(UniValue::VOBJ);

@@ -703,6 +703,10 @@ static bool SignStep(const SigningProvider& provider, const BaseSignatureCreator
     case TxoutType::WITNESS_V1_TAPROOT:
         return SignTaproot(provider, creator, WitnessV1Taproot(XOnlyPubKey{vSolutions[0]}), sigdata, ret);
 
+    case TxoutType::WITNESS_V3_SINGLETON:
+        // TODO: Implement signing
+        return false;
+
     case TxoutType::ANCHOR:
         return true;
     } // no default case, so the compiler can warn about missing cases
