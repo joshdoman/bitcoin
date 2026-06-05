@@ -84,6 +84,7 @@ typedef enum ScriptError_t
     /* Singleton */
     SCRIPT_ERR_SINGLETON_WRONG_CONTROL_SIZE,
     SCRIPT_ERR_SINGLETON_UNAUTHORIZED_OUTPUT,
+    SCRIPT_ERR_MISSING_SINGLETON,
 
     /* Constant scriptCode */
     SCRIPT_ERR_OP_CODESEPARATOR,

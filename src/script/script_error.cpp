@@ -111,6 +111,8 @@ std::string ScriptErrorString(const ScriptError serror)
             return "Invalid Singleton control block size";
         case SCRIPT_ERR_SINGLETON_UNAUTHORIZED_OUTPUT:
             return "Invalid Singleton output";
+        case SCRIPT_ERR_MISSING_SINGLETON:
+            return "Missing Singleton input at specified index";
         case SCRIPT_ERR_TAPSCRIPT_VALIDATION_WEIGHT:
             return "Too much signature validation relative to witness weight";
         case SCRIPT_ERR_TAPSCRIPT_CHECKMULTISIG:

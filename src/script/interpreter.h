@@ -318,6 +318,11 @@ public:
         return false;
     }
 
+    virtual std::optional<uint256> GetSingletonIdentifier(unsigned int kIn) const
+    {
+        return std::nullopt;
+    }
+
     virtual ~BaseSignatureChecker() = default;
 };
 
@@ -356,6 +361,7 @@ public:
     bool CheckLockTime(const CScriptNum& nLockTime) const override;
     bool CheckSequence(const CScriptNum& nSequence) const override;
     bool CheckSingletonContinuation(const std::span<const unsigned char>& hash) const override;
+    std::optional<uint256> GetSingletonIdentifier(unsigned int kIn) const override;
 };
 
 using TransactionSignatureChecker = GenericTransactionSignatureChecker<CTransaction>;
@@ -390,6 +396,10 @@ public:
     bool CheckSingletonContinuation(const std::span<const unsigned char>& hash) const override
     {
         return m_checker.CheckSingletonContinuation(hash);
+    }
+    std::optional<uint256> GetSingletonIdentifier(unsigned int kIn) const override
+    {
+        return m_checker.GetSingletonIdentifier(kIn);
     }
 };
 

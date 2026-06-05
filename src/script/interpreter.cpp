@@ -1214,6 +1214,24 @@ bool EvalScript(std::vector<std::vector<unsigned char> >& stack, const CScript& 
                 }
                 break;
 
+                case OP_SINGLETON:
+                {
+                    // OP_SINGLETON is only available in Tapscript
+                    if (sigversion == SigVersion::BASE || sigversion == SigVersion::WITNESS_V0) {
+                        return set_error(serror, SCRIPT_ERR_BAD_OPCODE);
+                    }
+
+                    if (stack.size() < 1) return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                    int kIn = CScriptNum(stacktop(-1), true).getint();
+                    if (kIn < 0) return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+
+                    std::optional<uint256> identifier = checker.GetSingletonIdentifier((unsigned int)kIn);
+                    if (!identifier.has_value()) return set_error(serror, SCRIPT_ERR_MISSING_SINGLETON);
+                    popstack(stack);
+                    stack.emplace_back(identifier->begin(), identifier->end());
+                }
+                break;
+
                 default:
                     return set_error(serror, SCRIPT_ERR_BAD_OPCODE);
             }
@@ -1842,6 +1860,23 @@ bool GenericTransactionSignatureChecker<T>::CheckSingletonContinuation(const std
     return false;
 }
 
+template <class T>
+std::optional<uint256> GenericTransactionSignatureChecker<T>::GetSingletonIdentifier(unsigned int kIn) const
+{
+    if (!this->txdata || !txdata->m_spent_outputs_ready) return std::nullopt;
+
+    if (kIn < txdata->m_spent_outputs.size() && txdata->m_spent_outputs[kIn].scriptPubKey.IsPayToSingleton()) {
+        std::span stack{txTo->vin[kIn].scriptWitness.stack};
+        if (stack.size() < 2) return std::nullopt;
+        if (!stack.back().empty() && stack.back()[0] == ANNEX_TAG) SpanPopBack(stack); // Drop annex
+        const valtype& control = stack.back();
+        if (control.size() < SINGLETON_CONTROL_BASE_SIZE) return std::nullopt;
+        return uint256{std::span{control}.subspan(1, SINGLETON_CONTROL_BASE_SIZE - 1)};
+    }
+
+    return std::nullopt;
+}
+
 // explicit instantiation
 template class GenericTransactionSignatureChecker<CTransaction>;
 template class GenericTransactionSignatureChecker<CMutableTransaction>;
@@ -1858,6 +1893,9 @@ static bool ExecuteWitnessScript(const std::span<const valtype>& stack_span, con
             if (!exec_script.GetOp(pc, opcode)) {
                 // Note how this condition would not be reached if an unknown OP_SUCCESSx was found
                 return set_error(serror, SCRIPT_ERR_BAD_OPCODE);
+            }
+            if (opcode == OP_SINGLETON) {
+                if (flags & SCRIPT_VERIFY_SINGLETON) continue;
             }
             // New opcodes will be listed here. May use a different sigversion to modify existing opcodes.
             if (IsOpSuccess(opcode)) {
